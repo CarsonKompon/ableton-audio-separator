@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Dialog</title>
+    <script>
+      // Send a result back to the extension host and close this dialog.
+      // The string you pass becomes the value `dialog.show(...)` resolves with.
+      function closeWithResult(result) {
+        const message = { method: "close_and_send", params: [result] };
+        if (window.webkit?.messageHandlers?.live) {
+          window.webkit.messageHandlers.live.postMessage(message);
+        } else if (window.chrome?.webview) {
+          window.chrome.webview.postMessage(message);
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <p>Hello from your extension's UI.</p>
+    <button onclick="closeWithResult('ok')">Close</button>
+  </body>
+</html>

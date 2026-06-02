@@ -1,0 +1,10 @@
+.DS_Store
+node_modules/
+dist/
+reference/*
+
+*.log
+*.ablx
+*.tsbuildinfo
+
+.env
