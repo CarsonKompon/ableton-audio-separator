@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Separate Stems</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #1e1e1e;
+      color: #e0e0e0;
+      padding: 20px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #ffffff;
+    }
+
+    .field {
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #999;
+      margin-bottom: 4px;
+    }
+
+    select, input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #3a3a3a;
+      border-radius: 4px;
+      background: #2a2a2a;
+      color: #e0e0e0;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    select:focus, input[type="text"]:focus {
+      border-color: #ff6b00;
+    }
+
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .checkbox-field input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #ff6b00;
+    }
+
+    .checkbox-field label {
+      margin-bottom: 0;
+      text-transform: none;
+      font-size: 13px;
+      color: #e0e0e0;
+      font-weight: 400;
+    }
+
+    .model-info {
+      font-size: 11px;
+      color: #777;
+      margin-top: 4px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      justify-content: flex-end;
+    }
+
+    button {
+      padding: 8px 18px;
+      border: 1px solid #3a3a3a;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    button.primary {
+      background: #ff6b00;
+      border-color: #ff6b00;
+      color: #fff;
+    }
+
+    button.primary:hover {
+      background: #e65e00;
+    }
+
+    button.secondary {
+      background: #2a2a2a;
+      color: #e0e0e0;
+    }
+
+    button.secondary:hover {
+      background: #3a3a3a;
+    }
+
+    .separator {
+      border-top: 1px solid #333;
+      margin: 16px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Separate Stems</h1>
+
+  <div class="field">
+    <label for="mode">Separation Mode</label>
+    <select id="mode">
+      <option value="2-stem">2-Stem (Vocals + Instrumental)</option>
+      <option value="4-stem">4-Stem (Vocals, Drums, Bass, Other)</option>
+      <option value="6-stem">6-Stem (Vocals, Drums, Bass, Guitar, Piano, Other)</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="model">Model</label>
+    <select id="model"></select>
+    <div class="model-info" id="modelInfo">Best quality vocal/instrumental separation</div>
+  </div>
+
+  <div class="separator"></div>
+
+  <div class="field">
+    <label for="outputFormat">Output Format</label>
+    <select id="outputFormat">
+      <option value="WAV">WAV (Lossless)</option>
+      <option value="FLAC">FLAC (Lossless, compressed)</option>
+    </select>
+  </div>
+
+  <div class="checkbox-field">
+    <input type="checkbox" id="useGpu" checked />
+    <label for="useGpu">Use GPU acceleration (CUDA)</label>
+  </div>
+
+  <div class="actions">
+    <button class="secondary" onclick="cancel()">Cancel</button>
+    <button class="primary" onclick="separate()">Separate</button>
+  </div>
+
+  <script>
+    // Model definitions matching src/separator.ts
+    const MODELS = {
+      "2-stem": [
+        { name: "BS-Roformer (Best Quality)", filename: "model_bs_roformer_ep_317_sdr_12.9755.ckpt" },
+        { name: "MelBand Roformer (Vocals)", filename: "vocals_mel_band_roformer.ckpt" },
+        { name: "UVR-MDX-NET Karaoke", filename: "UVR_MDXNET_KARA_2.onnx" },
+        { name: "UVR-MDX-NET Inst HQ 3", filename: "UVR-MDX-NET-Inst_HQ_3.onnx" },
+      ],
+      "4-stem": [
+        { name: "HTDemucs FT (Best Quality)", filename: "htdemucs_ft.yaml" },
+        { name: "HTDemucs (Faster)", filename: "htdemucs.yaml" },
+      ],
+      "6-stem": [
+        { name: "HTDemucs 6-stem", filename: "htdemucs_6s.yaml" },
+      ],
+    };
+
+    const MODEL_INFO = {
+      "model_bs_roformer_ep_317_sdr_12.9755.ckpt": "Best quality vocal/instrumental separation (SDR 12.97)",
+      "vocals_mel_band_roformer.ckpt": "High quality vocal extraction (SDR 12.6)",
+      "UVR_MDXNET_KARA_2.onnx": "Optimized for karaoke (removes lead vocals)",
+      "UVR-MDX-NET-Inst_HQ_3.onnx": "High quality instrumental extraction",
+      "htdemucs_ft.yaml": "Best 4-stem quality (vocals, drums, bass, other)",
+      "htdemucs.yaml": "Faster 4-stem separation, slightly lower quality",
+      "htdemucs_6s.yaml": "6-stem: vocals, drums, bass, guitar, piano, other",
+    };
+
+    const modeSelect = document.getElementById("mode");
+    const modelSelect = document.getElementById("model");
+    const modelInfo = document.getElementById("modelInfo");
+
+    function populateModels() {
+      const mode = modeSelect.value;
+      const models = MODELS[mode];
+      modelSelect.innerHTML = "";
+      models.forEach((m) => {
+        const opt = document.createElement("option");
+        opt.value = m.filename;
+        opt.textContent = m.name;
+        modelSelect.appendChild(opt);
+      });
+      updateModelInfo();
+    }
+
+    function updateModelInfo() {
+      const info = MODEL_INFO[modelSelect.value];
+      modelInfo.textContent = info || "";
+    }
+
+    modeSelect.addEventListener("change", populateModels);
+    modelSelect.addEventListener("change", updateModelInfo);
+
+    // Initialize
+    populateModels();
+
+    // Communication with extension host
+    function postMessage(msg) {
+      const message = { method: "close_and_send", params: [JSON.stringify(msg)] };
+      if (window.webkit?.messageHandlers?.live) {
+        window.webkit.messageHandlers.live.postMessage(message);
+      } else if (window.chrome?.webview) {
+        window.chrome.webview.postMessage(message);
+      }
+    }
+
+    function separate() {
+      postMessage({
+        action: "separate",
+        mode: modeSelect.value,
+        modelFilename: modelSelect.value,
+        outputFormat: document.getElementById("outputFormat").value,
+        useGpu: document.getElementById("useGpu").checked,
+      });
+    }
+
+    function cancel() {
+      postMessage({ action: "cancel" });
+    }
+  </script>
+</body>
+</html>
