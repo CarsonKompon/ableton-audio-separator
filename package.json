@@ -1,5 +1,5 @@
 {
-  "name": "ableton-uvr-extension",
+  "name": "ableton-audio-separator",
   "version": "1.0.0",
   "main": "dist/extension.js",
   "engines": {
