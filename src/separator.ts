@@ -1,15 +1,36 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs";
-import * as os from "node:os";
 
-// The venv lives inside the extension directory — eliminates all PATH issues.
-const VENV_DIR = path.join(__dirname, "..", ".venv");
 const IS_WINDOWS = process.platform === "win32";
-const SCRIPTS_DIR = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
-const AUDIO_SEP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "audio-separator.exe" : "audio-separator");
-const PIP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "pip.exe" : "pip");
-const PYTHON_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "python.exe" : "python");
+
+// These are set at runtime via `initPaths()` from extension.ts,
+// using the SDK-provided directories that the extension host permits writes to.
+let VENV_DIR = "";
+let SCRIPTS_DIR = "";
+let AUDIO_SEP_BIN = "";
+let PIP_BIN = "";
+let PYTHON_BIN = "";
+let TEMP_DIR = "";
+
+/**
+ * Must be called once at activation with the SDK-provided directories.
+ * - storageDir: `context.environment.storageDirectory` — persistent (for .venv)
+ * - tempDir: `context.environment.tempDirectory` — temp files (for stem output)
+ */
+export function initPaths(storageDir: string, tempDir: string) {
+  VENV_DIR = path.join(storageDir, ".venv");
+  SCRIPTS_DIR = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
+  AUDIO_SEP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "audio-separator.exe" : "audio-separator");
+  PIP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "pip.exe" : "pip");
+  PYTHON_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "python.exe" : "python");
+  TEMP_DIR = tempDir;
+}
+
+/** Returns the resolved paths for debugging. */
+export function getVenvPaths() {
+  return { VENV_DIR, SCRIPTS_DIR, AUDIO_SEP_BIN, PIP_BIN, PYTHON_BIN, TEMP_DIR };
+}
 
 /** Available separation modes with their corresponding model filenames. */
 export const SEPARATION_MODELS = {
@@ -104,6 +125,8 @@ export async function installAudioSeparator(
   // Step 1: Create the venv if it doesn't exist.
   if (!fs.existsSync(VENV_DIR)) {
     onProgress("Creating Python virtual environment...", undefined);
+    // Ensure storage directory exists.
+    await fs.promises.mkdir(path.dirname(VENV_DIR), { recursive: true });
     await runCommand(`python -m venv "${VENV_DIR}"`, signal);
   }
 
@@ -204,7 +227,9 @@ export async function separateAudio(
   onProgress: (message: string, percentage: number | undefined) => void,
   signal: AbortSignal,
 ): Promise<SeparationResult> {
-  const outputDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "uvr-stems-"));
+  // Ensure temp dir exists before creating subdirectory.
+  await fs.promises.mkdir(TEMP_DIR, { recursive: true });
+  const outputDir = await fs.promises.mkdtemp(path.join(TEMP_DIR, "uvr-stems-"));
 
   const args = [
     `"${inputFilePath}"`,

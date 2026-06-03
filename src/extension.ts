@@ -11,6 +11,8 @@ import {
   checkAudioSeparatorAvailable,
   installAudioSeparator,
   logEnvironmentInfo,
+  getVenvPaths,
+  initPaths,
   separateAudio,
   cleanupTempFiles,
   type SeparationConfig,
@@ -23,34 +25,62 @@ import settingsHtml from "../ui/settings.html";
 export function activate(activation: ActivationContext) {
   const context = initialize(activation, "1.0.0");
 
+  // Initialize filesystem paths using SDK-provided directories.
+  const storageDir = context.environment.storageDirectory;
+  const tempDir = context.environment.tempDirectory;
+  if (!storageDir || !tempDir) {
+    console.error("[UVR] SDK did not provide storageDirectory or tempDirectory. Cannot operate.");
+    return;
+  }
+  initPaths(storageDir, tempDir);
+
+  // Log resolved paths for debugging.
+  try {
+    const paths = getVenvPaths();
+    console.log("[UVR] Extension paths:", JSON.stringify(paths, null, 2));
+  } catch (err) {
+    console.error("[UVR] Failed to log paths:", err);
+  }
+
   // --- Startup check for audio-separator availability ---
   checkAudioSeparatorAvailable().then(async (version) => {
     if (version) {
       console.log(`[UVR] audio-separator found: ${version}`);
-      const envInfo = await logEnvironmentInfo();
-      console.log(`[UVR] Environment:\n${envInfo}`);
+      try {
+        const envInfo = await logEnvironmentInfo();
+        console.log(`[UVR] Environment:\n${envInfo}`);
+      } catch (err) {
+        console.error("[UVR] Failed to get env info:", err);
+      }
     } else {
       console.warn(
         "[UVR] audio-separator not found. " +
         "It will be installed into a local venv on first use."
       );
     }
+  }).catch((err) => {
+    console.error("[UVR] Startup check failed:", err);
   });
 
   // --- Command: Separate from AudioClip context menu ---
   context.commands.registerCommand(
     "uvr.separateClip",
     async (...args: unknown[]) => {
-      const handle = args[0] as Handle;
-      const clip = context.getObjectFromHandle(handle, AudioClip);
-      const filePath = clip.filePath;
-      const startTime = clip.startTime;
-      const duration = clip.duration;
+      try {
+        const handle = args[0] as Handle;
+        const clip = context.getObjectFromHandle(handle, AudioClip);
+        const filePath = clip.filePath;
+        const startTime = clip.startTime;
+        const duration = clip.duration;
 
-      // Find the parent track name for labeling.
-      const trackName = findParentTrackName(clip, context) ?? "Audio";
+        // Find the parent track name for labeling.
+        const trackName = findParentTrackName(clip, context) ?? "Audio";
 
-      await showSettingsAndSeparate(filePath, startTime, duration, trackName);
+        await showSettingsAndSeparate(filePath, startTime, duration, trackName);
+      } catch (err) {
+        console.error("[UVR] Error in separateClip:", err);
+        await showErrorDialog(`Clip separation failed: ${err}`);
+      }
     },
   );
 
@@ -58,36 +88,42 @@ export function activate(activation: ActivationContext) {
   context.commands.registerCommand(
     "uvr.separateSelection",
     async (...args: unknown[]) => {
-      const selection = args[0] as ArrangementSelection;
-      const start = selection.time_selection_start;
-      const end = selection.time_selection_end;
+      try {
+        const selection = args[0] as ArrangementSelection;
+        const start = selection.time_selection_start;
+        const end = selection.time_selection_end;
 
-      if (selection.selected_lanes.length === 0) {
-        console.error("[UVR] No tracks selected in arrangement.");
-        return;
+        if (selection.selected_lanes.length === 0) {
+          console.error("[UVR] No tracks selected in arrangement.");
+          return;
+        }
+
+        // Use the first selected lane/track for rendering.
+        const trackHandle = selection.selected_lanes[0];
+        const track = context.getObjectFromHandle(trackHandle, AudioTrack);
+        const trackName = track.name ?? "Audio";
+
+        // Render the selection first, then show settings (avoid nesting dialogs).
+        let renderedPath: string;
+        await context.ui.withinProgressDialog(
+          "Rendering audio...",
+          {},
+          async (update, signal) => {
+            await update("Rendering pre-FX audio from arrangement...", undefined);
+            signal.throwIfAborted();
+
+            renderedPath = await context.resources.renderPreFxAudio(
+              track, start, end,
+            );
+          },
+        );
+
+        const duration = end - start;
+        await showSettingsAndSeparate(renderedPath!, start, duration, trackName);
+      } catch (err) {
+        console.error("[UVR] Error in separateSelection:", err);
+        await showErrorDialog(`Selection separation failed: ${err}`);
       }
-
-      // Use the first selected lane/track for rendering.
-      const trackHandle = selection.selected_lanes[0];
-      const track = context.getObjectFromHandle(trackHandle, AudioTrack);
-      const trackName = track.name ?? "Audio";
-
-      // Render the selection to a temp WAV file.
-      await context.ui.withinProgressDialog(
-        "Rendering audio...",
-        {},
-        async (update, signal) => {
-          update("Rendering pre-FX audio from arrangement...", undefined);
-          signal.throwIfAborted();
-
-          const renderedPath = await context.resources.renderPreFxAudio(
-            track, start, end,
-          );
-
-          const duration = end - start;
-          await showSettingsAndSeparate(renderedPath, start, duration, trackName);
-        },
-      );
     },
   );
 
@@ -103,6 +139,22 @@ export function activate(activation: ActivationContext) {
     "Separate Selection Stems (UVR)",
     "uvr.separateSelection",
   );
+
+  // --- Helper: show a visible error dialog to the user ---
+  async function showErrorDialog(message: string): Promise<void> {
+    const escaped = message.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const html = `<html><body style="font-family:sans-serif;background:#1e1e1e;color:#e0e0e0;padding:20px;">
+      <h2 style="color:#ff4444;">Error</h2>
+      <pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;background:#2a2a2a;padding:12px;border-radius:4px;max-height:200px;overflow:auto;">${escaped}</pre>
+      <div style="margin-top:16px;text-align:right;">
+        <button onclick="(function(){var m={method:'close_and_send',params:['ok']};if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.live)window.webkit.messageHandlers.live.postMessage(m);else if(window.chrome&&window.chrome.webview)window.chrome.webview.postMessage(m);})()" style="padding:8px 16px;background:#ff6b00;border:none;color:#fff;border-radius:4px;cursor:pointer;">OK</button>
+      </div></body></html>`;
+    try {
+      await context.ui.showModalDialog(`data:text/html,${encodeURIComponent(html)}`, 460, 260);
+    } catch {
+      // If even this dialog fails, just log it.
+    }
+  }
 
   // --- Core workflow: show settings dialog then run separation ---
   async function showSettingsAndSeparate(
@@ -164,7 +216,12 @@ export function activate(activation: ActivationContext) {
     const settingsUrl = `data:text/html,${encodeURIComponent(settingsHtml)}`;
     const result = await context.ui.showModalDialog(settingsUrl, 440, 480);
 
-    if (!result) return;
+    console.log("[UVR] Dialog result:", JSON.stringify(result));
+
+    if (!result) {
+      console.log("[UVR] Dialog returned empty result (cancelled or closed).");
+      return;
+    }
 
     let config: SeparationConfig;
     try {
@@ -178,42 +235,53 @@ export function activate(activation: ActivationContext) {
       };
     } catch {
       console.error("[UVR] Failed to parse dialog result:", result);
+      await showErrorDialog(`Failed to parse settings: ${result}`);
       return;
     }
 
+    console.log("[UVR] Starting separation with config:", JSON.stringify(config));
+    console.log("[UVR] Input file:", inputFilePath);
+
     // Run separation with progress dialog.
-    await context.ui.withinProgressDialog(
-      "Separating Stems",
-      {},
-      async (update, signal) => {
-        update("Initializing...", 0);
+    try {
+      await context.ui.withinProgressDialog(
+        "Separating Stems",
+        {},
+        async (update, signal) => {
+          await update("Initializing...", 0);
 
-        const separationResult = await separateAudio(
-          inputFilePath,
-          config,
-          (message, percentage) => {
-            update(message, percentage);
-          },
-          signal,
-        );
+          const separationResult = await separateAudio(
+            inputFilePath,
+            config,
+            (message, percentage) => {
+              // Fire-and-forget update from event handlers (can't await in sync context).
+              // Catch any errors to prevent unhandled rejections.
+              Promise.resolve(update(message, percentage)).catch(() => {});
+            },
+            signal,
+          );
 
-        // Import stems and create tracks.
-        update("Importing stems into project...", undefined);
-        signal.throwIfAborted();
+          // Import stems and create tracks.
+          await update("Importing stems into project...", undefined);
+          signal.throwIfAborted();
 
-        await importStemsAndCreateTracks(
-          context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
-          separationResult,
-          { sourceTrackName, startTimeBeats, durationBeats },
-        );
+          await importStemsAndCreateTracks(
+            context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
+            separationResult,
+            { sourceTrackName, startTimeBeats, durationBeats },
+          );
 
-        // Clean up temp files.
-        update("Cleaning up...", undefined);
-        await cleanupTempFiles(separationResult.stems);
+          // Clean up temp files.
+          await update("Cleaning up...", undefined);
+          await cleanupTempFiles(separationResult.stems);
 
-        update("Done!", 100);
-      },
-    );
+          await update("Done!", 100);
+        },
+      );
+    } catch (err) {
+      console.error("[UVR] Separation failed:", err);
+      await showErrorDialog(`Separation failed: ${err}`);
+    }
   }
 }
 
