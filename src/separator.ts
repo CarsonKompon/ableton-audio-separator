@@ -4,32 +4,29 @@ import * as fs from "node:fs";
 
 const IS_WINDOWS = process.platform === "win32";
 
-// These are set at runtime via `initPaths()` from extension.ts,
-// using the SDK-provided directories that the extension host permits writes to.
-let VENV_DIR = "";
-let SCRIPTS_DIR = "";
-let AUDIO_SEP_BIN = "";
-let PIP_BIN = "";
-let PYTHON_BIN = "";
+// Set at runtime via `initPaths()`.
 let TEMP_DIR = "";
+let STORAGE_DIR = "";
+let UV_BIN = ""; // Resolved path to the uv binary (or just "uv" if on PATH)
 
 /**
  * Must be called once at activation with the SDK-provided directories.
- * - storageDir: `context.environment.storageDirectory` — persistent (for .venv)
- * - tempDir: `context.environment.tempDirectory` — temp files (for stem output)
  */
 export function initPaths(storageDir: string, tempDir: string) {
-  VENV_DIR = path.join(storageDir, ".venv");
-  SCRIPTS_DIR = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
-  AUDIO_SEP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "audio-separator.exe" : "audio-separator");
-  PIP_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "pip.exe" : "pip");
-  PYTHON_BIN = path.join(SCRIPTS_DIR, IS_WINDOWS ? "python.exe" : "python");
+  STORAGE_DIR = storageDir;
   TEMP_DIR = tempDir;
+  // Check for a local uv binary in storage, otherwise fall back to PATH
+  const localUv = path.join(storageDir, "uv", IS_WINDOWS ? "uv.exe" : "uv");
+  if (fs.existsSync(localUv)) {
+    UV_BIN = localUv;
+  } else {
+    UV_BIN = "uv"; // Assume on PATH initially; installUv will set this properly
+  }
 }
 
 /** Returns the resolved paths for debugging. */
-export function getVenvPaths() {
-  return { VENV_DIR, SCRIPTS_DIR, AUDIO_SEP_BIN, PIP_BIN, PYTHON_BIN, TEMP_DIR };
+export function getPaths() {
+  return { UV_BIN, STORAGE_DIR, TEMP_DIR };
 }
 
 /** Available separation modes with their corresponding model filenames. */
@@ -64,33 +61,27 @@ export interface SeparationResult {
 }
 
 /**
- * Checks whether the local venv has audio-separator installed.
- * Returns the version string if found, or null if not available.
+ * Checks whether `uv` is available and can run audio-separator.
+ * Returns a version string if uvx can resolve audio-separator, or null.
  */
 export async function checkAudioSeparatorAvailable(): Promise<string | null> {
-  try {
-    if (!fs.existsSync(AUDIO_SEP_BIN)) {
-      return null;
-    }
-  } catch {
-    return null;
-  }
+  // First check if uv itself is available.
+  const uvAvailable = await checkUvAvailable();
+  if (!uvAvailable) return null;
 
+  // Check if uvx can resolve audio-separator (it may need to download it on first use).
   return new Promise((resolve) => {
     try {
-      const proc = spawn(`"${AUDIO_SEP_BIN}" --version`, [], { shell: true });
+      const cmd = `"${UV_BIN}" tool run audio-separator --version`;
+      const proc = spawn(cmd, [], { shell: true });
       let output = "";
 
-      proc.stdout.on("data", (data: Buffer) => {
-        output += data.toString();
-      });
-      proc.stderr.on("data", (data: Buffer) => {
-        output += data.toString();
-      });
+      proc.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+      proc.stderr.on("data", (data: Buffer) => { output += data.toString(); });
 
       proc.on("error", () => resolve(null));
       proc.on("close", (code) => {
-        if (code === 0) {
+        if (code === 0 && output.trim()) {
           resolve(output.trim());
         } else {
           resolve(null);
@@ -102,20 +93,27 @@ export async function checkAudioSeparatorAvailable(): Promise<string | null> {
   });
 }
 
-/**
- * Logs audio-separator environment info (GPU detection, CUDA availability).
- * Call this after confirming audio-separator is installed.
- */
-export async function logEnvironmentInfo(): Promise<string> {
-  try {
-    if (!fs.existsSync(AUDIO_SEP_BIN)) return "audio-separator not installed";
-  } catch {
-    return "Cannot check audio-separator (fs access denied)";
-  }
-
+/** Check if `uv` binary is available. */
+async function checkUvAvailable(): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const proc = spawn(`"${AUDIO_SEP_BIN}" --env_info`, [], { shell: true });
+      const proc = spawn(`"${UV_BIN}" --version`, [], { shell: true });
+      proc.on("error", () => resolve(false));
+      proc.on("close", (code) => resolve(code === 0));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * Logs audio-separator environment info.
+ */
+export async function logEnvironmentInfo(): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const cmd = `"${UV_BIN}" tool run audio-separator --env_info`;
+      const proc = spawn(cmd, [], { shell: true });
       let output = "";
 
       proc.stdout.on("data", (data: Buffer) => { output += data.toString(); });
@@ -130,7 +128,7 @@ export async function logEnvironmentInfo(): Promise<string> {
 }
 
 /**
- * Creates a Python venv in the extension directory and installs audio-separator into it.
+ * Installs `uv` (if not already present) and pre-installs audio-separator via uvx.
  * Reports progress via the `onProgress` callback and supports cancellation.
  */
 export async function installAudioSeparator(
@@ -138,36 +136,17 @@ export async function installAudioSeparator(
   onProgress: (message: string, percentage: number | undefined) => void,
   signal: AbortSignal,
 ): Promise<boolean> {
-  // Step 1: Create the venv if it doesn't exist.
-  if (!fs.existsSync(VENV_DIR)) {
-    onProgress("Creating Python virtual environment...", undefined);
-    // Ensure storage directory exists.
-    await fs.promises.mkdir(path.dirname(VENV_DIR), { recursive: true });
-    await runCommand(`python -m venv "${VENV_DIR}"`, signal);
-  }
-
-  signal.throwIfAborted();
-
-  // Step 2: Upgrade pip inside the venv.
-  onProgress("Upgrading pip...", undefined);
-  await runCommand(`"${PYTHON_BIN}" -m pip install --upgrade pip`, signal);
-
-  signal.throwIfAborted();
-
-  // Step 3: Install CUDA-enabled PyTorch if GPU mode selected.
-  // pip's default PyTorch is CPU-only; we need the CUDA index for GPU support.
-  if (useGpu) {
-    onProgress("Installing PyTorch with CUDA support...", undefined);
-    await runCommand(
-      `"${PIP_BIN}" install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121`,
-      signal,
-    );
+  // Step 1: Ensure uv is available.
+  const uvAvailable = await checkUvAvailable();
+  if (!uvAvailable) {
+    onProgress("Installing uv package manager...", undefined);
+    await installUv(signal);
     signal.throwIfAborted();
   }
 
-  // Step 4: Install audio-separator into the venv.
+  // Step 2: Install audio-separator tool via uv.
   const extra = useGpu ? "gpu" : "cpu";
-  onProgress(`Installing audio-separator[${extra}]...`, undefined);
+  onProgress(`Installing audio-separator[${extra}] via uv...`, undefined);
 
   return new Promise<boolean>((resolve, reject) => {
     if (signal.aborted) {
@@ -175,7 +154,8 @@ export async function installAudioSeparator(
       return;
     }
 
-    const command = `"${PIP_BIN}" install "audio-separator[${extra}]"`;
+    // Use `uv tool install` to make audio-separator permanently available via uvx.
+    const command = `"${UV_BIN}" tool install "audio-separator[${extra}]"`;
     const proc = spawn(command, [], { shell: true });
 
     const abortHandler = () => {
@@ -190,32 +170,41 @@ export async function installAudioSeparator(
       const text = data.toString();
       output += text;
 
-      const dlMatch = text.match(/Downloading\s+\S+\s+\(([^)]+)\)/);
-      if (dlMatch) {
-        onProgress(`Downloading ${dlMatch[1]}...`, undefined);
+      if (text.includes("Resolved")) {
+        onProgress("Resolving dependencies...", 30);
       }
-
-      const pctMatch = text.match(/(\d{1,3})%/);
-      if (pctMatch) {
-        onProgress("Downloading packages...", parseInt(pctMatch[1], 10));
+      if (text.includes("Downloading")) {
+        onProgress("Downloading packages...", 50);
       }
-
-      if (text.includes("Installing collected packages")) {
-        onProgress("Installing packages...", undefined);
+      if (text.includes("Installing")) {
+        onProgress("Installing packages...", 70);
       }
-
-      if (text.includes("Successfully installed")) {
+      if (text.includes("Installed")) {
         onProgress("Installation complete!", 100);
       }
     });
 
     proc.stderr?.on("data", (data: Buffer) => {
-      output += data.toString();
+      const text = data.toString();
+      output += text;
+
+      if (text.includes("Resolved")) {
+        onProgress("Resolving dependencies...", 30);
+      }
+      if (text.includes("Downloading")) {
+        onProgress("Downloading packages...", 50);
+      }
+      if (text.includes("Installing")) {
+        onProgress("Installing packages...", 70);
+      }
+      if (text.includes("Installed")) {
+        onProgress("Installation complete!", 100);
+      }
     });
 
     proc.on("error", (err) => {
       signal.removeEventListener("abort", abortHandler);
-      reject(new Error(`Failed to run pip: ${err.message}`));
+      reject(new Error(`Failed to run uv tool install: ${err.message}`));
     });
 
     proc.on("close", (code) => {
@@ -226,7 +215,7 @@ export async function installAudioSeparator(
         resolve(true);
       } else {
         reject(new Error(
-          `pip install failed (exit code ${code}).\n${output.slice(-500)}`
+          `uv tool install failed (exit code ${code}).\n${output.slice(-500)}`
         ));
       }
     });
@@ -234,8 +223,42 @@ export async function installAudioSeparator(
 }
 
 /**
+ * Installs `uv` into the extension's storage directory.
+ * Uses the official standalone installer scripts.
+ */
+async function installUv(signal: AbortSignal): Promise<void> {
+  const uvDir = path.join(STORAGE_DIR, "uv");
+  await fs.promises.mkdir(uvDir, { recursive: true });
+
+  let command: string;
+  if (IS_WINDOWS) {
+    // Use PowerShell to download and run the official installer
+    command = `powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $env:UV_INSTALL_DIR='${uvDir}'; irm https://astral.sh/uv/install.ps1 | iex }"`;
+  } else {
+    command = `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR="${uvDir}" sh`;
+  }
+
+  await runCommand(command, signal);
+
+  // Update UV_BIN to the newly installed binary.
+  const installedBin = path.join(uvDir, IS_WINDOWS ? "uv.exe" : "uv");
+  if (fs.existsSync(installedBin)) {
+    UV_BIN = installedBin;
+  } else {
+    // The installer might put it in a bin/ subdirectory
+    const binSubdir = path.join(uvDir, "bin", IS_WINDOWS ? "uv.exe" : "uv");
+    if (fs.existsSync(binSubdir)) {
+      UV_BIN = binSubdir;
+    } else {
+      // Fall back — maybe the installer put it on PATH
+      UV_BIN = "uv";
+    }
+  }
+}
+
+/**
  * Runs audio-separator on the given input file with the specified config.
- * Uses the venv-local binary directly — no PATH dependency.
+ * Uses `uv tool run audio-separator` (uvx) — no manual venv needed.
  */
 export async function separateAudio(
   inputFilePath: string,
@@ -264,7 +287,7 @@ export async function separateAudio(
       return;
     }
 
-    const fullCommand = `"${AUDIO_SEP_BIN}" ${args.join(" ")}`;
+    const fullCommand = `"${UV_BIN}" tool run audio-separator ${args.join(" ")}`;
     const proc: ChildProcess = spawn(fullCommand, [], { shell: true });
 
     let stderrBuffer = "";

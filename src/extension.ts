@@ -13,7 +13,7 @@ import {
   checkAudioSeparatorAvailable,
   installAudioSeparator,
   logEnvironmentInfo,
-  getVenvPaths,
+  getPaths,
   initPaths,
   separateAudio,
   cleanupTempFiles,
@@ -42,7 +42,7 @@ export function activate(activation: ActivationContext) {
     if (storageDir && tempDir) {
       initPaths(storageDir, tempDir);
       pathsReady = true;
-      console.log("[UVR] Paths initialized:", JSON.stringify(getVenvPaths(), null, 2));
+      console.log("[UVR] Paths initialized:", JSON.stringify(getPaths(), null, 2));
     } else {
       console.error("[UVR] SDK did not provide storageDirectory or tempDirectory.");
     }
@@ -167,7 +167,7 @@ export function activate(activation: ActivationContext) {
       const installHtml = `
         <html><body style="font-family:sans-serif;background:#1e1e1e;color:#e0e0e0;padding:20px;">
         <h2 style="color:#ff6b00;">audio-separator not found</h2>
-        <p style="margin:12px 0;">This extension requires <strong>audio-separator</strong> (Python package) to separate stems.</p>
+        <p style="margin:12px 0;">This extension requires <strong>audio-separator</strong> to separate stems. It will be installed automatically via <strong>uv</strong> (Python package manager).</p>
         <p style="margin:8px 0;color:#999;">Would you like to install it now?</p>
         <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end;">
           <button onclick="send('cancel')" style="padding:8px 16px;background:#2a2a2a;border:1px solid #3a3a3a;color:#e0e0e0;border-radius:4px;cursor:pointer;">Cancel</button>
