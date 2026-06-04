@@ -44,7 +44,13 @@ export function activate(activation: ActivationContext) {
       pathsReady = true;
       console.log("[UVR] Paths initialized:", JSON.stringify(getPaths(), null, 2));
     } else {
-      console.error("[UVR] SDK did not provide storageDirectory or tempDirectory.");
+      // Fall back to OS temp directories if SDK doesn't provide them.
+      const os = require("node:os") as typeof import("node:os");
+      const fallbackStorage = path.join(os.tmpdir(), "ableton-uvr-storage");
+      const fallbackTemp = path.join(os.tmpdir(), "ableton-uvr-temp");
+      console.warn(`[UVR] SDK directories not available (storage=${storageDir}, temp=${tempDir}). Using fallback: ${fallbackStorage}`);
+      initPaths(fallbackStorage, fallbackTemp);
+      pathsReady = true;
     }
   } catch (err) {
     console.error("[UVR] Failed to init paths:", err);
@@ -177,7 +183,7 @@ export function activate(activation: ActivationContext) {
         <script>function send(v){const m={method:"close_and_send",params:[v]};if(window.webkit?.messageHandlers?.live)window.webkit.messageHandlers.live.postMessage(m);else if(window.chrome?.webview)window.chrome.webview.postMessage(m);}</script>
         </body></html>`;
       const installUrl = `data:text/html,${encodeURIComponent(installHtml)}`;
-      const installResult = await context.ui.showModalDialog(installUrl, 460, 200);
+      const installResult = await context.ui.showModalDialog(installUrl, 460, 220);
 
       if (!installResult || installResult === "cancel") return;
 
