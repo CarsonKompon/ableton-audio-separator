@@ -1,5 +1,5 @@
 {
-    "name": "Ableton Audio Separator",
+    "name": "Audio Separator",
     "author": "Carson Kompon",
     "entry": "dist/extension.js",
     "version": "1.0.0",

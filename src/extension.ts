@@ -7,6 +7,8 @@ import {
   type ArrangementSelection,
 } from "@ableton-extensions/sdk";
 
+import * as path from "node:path";
+
 import {
   checkAudioSeparatorAvailable,
   installAudioSeparator,
@@ -16,6 +18,7 @@ import {
   separateAudio,
   cleanupTempFiles,
   type SeparationConfig,
+  type SeparationResult,
 } from "./separator.js";
 import { importStemsAndCreateTracks } from "./tracks.js";
 
@@ -23,44 +26,42 @@ import { importStemsAndCreateTracks } from "./tracks.js";
 import settingsHtml from "../ui/settings.html";
 
 export function activate(activation: ActivationContext) {
-  const context = initialize(activation, "1.0.0");
-
-  // Initialize filesystem paths using SDK-provided directories.
-  const storageDir = context.environment.storageDirectory;
-  const tempDir = context.environment.tempDirectory;
-  if (!storageDir || !tempDir) {
-    console.error("[UVR] SDK did not provide storageDirectory or tempDirectory. Cannot operate.");
+  let context: ReturnType<typeof initialize>;
+  try {
+    context = initialize(activation, "1.0.0");
+  } catch (err) {
+    console.error("[UVR] Failed to initialize SDK:", err);
     return;
   }
-  initPaths(storageDir, tempDir);
 
-  // Log resolved paths for debugging.
+  // Initialize filesystem paths using SDK-provided directories.
+  let pathsReady = false;
   try {
-    const paths = getVenvPaths();
-    console.log("[UVR] Extension paths:", JSON.stringify(paths, null, 2));
+    const storageDir = context.environment.storageDirectory;
+    const tempDir = context.environment.tempDirectory;
+    if (storageDir && tempDir) {
+      initPaths(storageDir, tempDir);
+      pathsReady = true;
+      console.log("[UVR] Paths initialized:", JSON.stringify(getVenvPaths(), null, 2));
+    } else {
+      console.error("[UVR] SDK did not provide storageDirectory or tempDirectory.");
+    }
   } catch (err) {
-    console.error("[UVR] Failed to log paths:", err);
+    console.error("[UVR] Failed to init paths:", err);
   }
 
-  // --- Startup check for audio-separator availability ---
-  checkAudioSeparatorAvailable().then(async (version) => {
-    if (version) {
-      console.log(`[UVR] audio-separator found: ${version}`);
-      try {
-        const envInfo = await logEnvironmentInfo();
-        console.log(`[UVR] Environment:\n${envInfo}`);
-      } catch (err) {
-        console.error("[UVR] Failed to get env info:", err);
+  // --- Startup check (only if paths are configured) ---
+  if (pathsReady) {
+    checkAudioSeparatorAvailable().then(async (version) => {
+      if (version) {
+        console.log(`[UVR] audio-separator found: ${version}`);
+      } else {
+        console.warn("[UVR] audio-separator not found. Will install on first use.");
       }
-    } else {
-      console.warn(
-        "[UVR] audio-separator not found. " +
-        "It will be installed into a local venv on first use."
-      );
-    }
-  }).catch((err) => {
-    console.error("[UVR] Startup check failed:", err);
-  });
+    }).catch((err) => {
+      console.error("[UVR] Startup check failed:", err);
+    });
+  }
 
   // --- Command: Separate from AudioClip context menu ---
   context.commands.registerCommand(
@@ -69,14 +70,33 @@ export function activate(activation: ActivationContext) {
       try {
         const handle = args[0] as Handle;
         const clip = context.getObjectFromHandle(handle, AudioClip);
-        const filePath = clip.filePath;
         const startTime = clip.startTime;
-        const duration = clip.duration;
+        const endTime = clip.endTime;
+        const duration = endTime - startTime;
 
-        // Find the parent track name for labeling.
+        // Find the parent track to render from.
         const trackName = findParentTrackName(clip, context) ?? "Audio";
+        const parentTrack = findParentTrack(clip, context);
+        if (!parentTrack) {
+          await showErrorDialog("Could not find the parent track for this clip.");
+          return;
+        }
 
-        await showSettingsAndSeparate(filePath, startTime, duration, trackName);
+        // Render just the audible portion of the clip (respects trim/markers).
+        let renderedPath: string;
+        await context.ui.withinProgressDialog(
+          "Rendering audio...",
+          {},
+          async (update, signal) => {
+            await update("Rendering clip audio...", undefined);
+            signal.throwIfAborted();
+            renderedPath = await context.resources.renderPreFxAudio(
+              parentTrack, startTime, endTime,
+            );
+          },
+        );
+
+        await showSettingsAndSeparate(renderedPath!, startTime, duration, trackName);
       } catch (err) {
         console.error("[UVR] Error in separateClip:", err);
         await showErrorDialog(`Clip separation failed: ${err}`);
@@ -163,6 +183,11 @@ export function activate(activation: ActivationContext) {
     durationBeats: number,
     sourceTrackName: string,
   ): Promise<void> {
+    if (!pathsReady) {
+      await showErrorDialog("Extension paths not configured. storageDirectory or tempDirectory unavailable.");
+      return;
+    }
+
     // Check audio-separator is available before showing UI.
     const version = await checkAudioSeparatorAvailable();
     if (!version) {
@@ -243,6 +268,7 @@ export function activate(activation: ActivationContext) {
     console.log("[UVR] Input file:", inputFilePath);
 
     // Run separation with progress dialog.
+    let separationResult: SeparationResult | null = null as SeparationResult | null;
     try {
       await context.ui.withinProgressDialog(
         "Separating Stems",
@@ -250,37 +276,59 @@ export function activate(activation: ActivationContext) {
         async (update, signal) => {
           await update("Initializing...", 0);
 
-          const separationResult = await separateAudio(
+          separationResult = await separateAudio(
             inputFilePath,
             config,
             (message, percentage) => {
-              // Fire-and-forget update from event handlers (can't await in sync context).
-              // Catch any errors to prevent unhandled rejections.
               Promise.resolve(update(message, percentage)).catch(() => {});
             },
             signal,
           );
 
-          // Import stems and create tracks.
-          await update("Importing stems into project...", undefined);
-          signal.throwIfAborted();
-
-          await importStemsAndCreateTracks(
-            context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
-            separationResult,
-            { sourceTrackName, startTimeBeats, durationBeats },
-          );
-
-          // Clean up temp files.
-          await update("Cleaning up...", undefined);
-          await cleanupTempFiles(separationResult.stems);
-
-          await update("Done!", 100);
+          await update("Separation complete!", 100);
         },
       );
     } catch (err) {
       console.error("[UVR] Separation failed:", err);
       await showErrorDialog(`Separation failed: ${err}`);
+      return;
+    }
+
+    if (!separationResult) return;
+    const finalResult: SeparationResult = separationResult;
+
+    const stemNames = [...finalResult.stems.keys()];
+    console.log("[UVR] Stems to import:", stemNames);
+
+    if (stemNames.length < 2 && config.mode !== "2-stem") {
+      // Show what we found so user can report back
+      const stemDetails = [...finalResult.stems.entries()]
+        .map(([name, p]) => `${name}: ${path.basename(p)}`)
+        .join("\n");
+      await showErrorDialog(
+        `Expected multiple stems for ${config.mode} but only found ${stemNames.length}:\n${stemDetails}\n\n` +
+        `This may be a model output naming issue. The separation files are in the temp directory.`
+      );
+    }
+
+    // Import stems and create tracks OUTSIDE the progress dialog.
+    try {
+      console.log("[UVR] Importing stems:", stemNames);
+      await importStemsAndCreateTracks(
+        context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
+        finalResult,
+        { sourceTrackName, startTimeBeats, durationBeats },
+      );
+    } catch (err) {
+      console.error("[UVR] Track creation failed:", err);
+      await showErrorDialog(`Failed to create tracks: ${err}`);
+    }
+
+    // Clean up temp files.
+    try {
+      await cleanupTempFiles(finalResult.stems);
+    } catch {
+      // Best-effort cleanup.
     }
   }
 }
@@ -293,13 +341,24 @@ function findParentTrackName(
   clip: InstanceType<typeof AudioClip>,
   context: ReturnType<typeof initialize>,
 ): string | null {
+  const track = findParentTrack(clip, context);
+  return track?.name ?? null;
+}
+
+/**
+ * Attempts to find the parent AudioTrack for a given clip.
+ */
+function findParentTrack(
+  clip: InstanceType<typeof AudioClip>,
+  context: ReturnType<typeof initialize>,
+): InstanceType<typeof AudioTrack> | null {
   try {
     const song = context.application.song;
     for (const track of song.tracks) {
       if (track instanceof AudioTrack) {
         const clips = track.arrangementClips;
         for (const c of clips) {
-          if (c === clip) return track.name;
+          if (c === clip) return track;
         }
       }
     }

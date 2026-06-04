@@ -19,7 +19,6 @@ export interface TrackPlacementOptions {
 
 /**
  * Imports all stem files into the project and creates new audio tracks.
- * All operations are wrapped in a transaction for single-undo.
  *
  * @param context - The Ableton Extensions SDK context object.
  * @param result - The separation result containing stem file paths.
@@ -28,37 +27,32 @@ export interface TrackPlacementOptions {
 export async function importStemsAndCreateTracks(
   context: {
     resources: { importIntoProject(filePath: string): Promise<string> };
-    application: { song: { createAudioTrack(): Promise<{ name: string; createAudioClip(args: { filePath: string; startTime: number; duration?: number; isWarped?: boolean }): Promise<unknown> }> } };
-    withinTransaction<T>(fn: () => T): T;
+    application: { song: { createAudioTrack(): Promise<{ name: string; createAudioClip(args: { filePath: string; startTime: number; isWarped?: boolean }): Promise<unknown> }> } };
   },
   result: SeparationResult,
   options: TrackPlacementOptions,
 ): Promise<void> {
-  // Import all stem files into the project first (outside transaction since it's async I/O).
+  // Import all stem files into the project first.
   const importedStems = new Map<string, string>();
   for (const [stemName, filePath] of result.stems) {
+    console.log(`[UVR] Importing stem "${stemName}" from: ${filePath}`);
     const projectPath = await context.resources.importIntoProject(filePath);
+    console.log(`[UVR] Imported "${stemName}" → ${projectPath}`);
     importedStems.set(stemName, projectPath);
   }
 
-  // Create tracks and place clips within a single transaction (one undo step).
-  context.withinTransaction(() => {
-    // We need to handle the async track creation carefully.
-    // withinTransaction expects synchronous grouping — the actual awaits
-    // happen inside but the transaction boundary captures them.
-  });
-
-  // Since withinTransaction may not support async in all SDK versions,
-  // we create tracks sequentially and rely on the SDK's behavior.
+  // Create tracks and place clips sequentially.
   for (const [stemName, projectPath] of importedStems) {
+    console.log(`[UVR] Creating track for "${stemName}"`);
     const track = await context.application.song.createAudioTrack();
     track.name = `${options.sourceTrackName} — ${stemName}`;
 
+    console.log(`[UVR] Creating clip on track "${track.name}" at beat ${options.startTimeBeats}`);
     await track.createAudioClip({
       filePath: projectPath,
       startTime: options.startTimeBeats,
-      duration: options.durationBeats,
-      isWarped: true,
+      isWarped: false,
     });
+    console.log(`[UVR] Successfully created clip for "${stemName}"`);
   }
 }

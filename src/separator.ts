@@ -68,29 +68,37 @@ export interface SeparationResult {
  * Returns the version string if found, or null if not available.
  */
 export async function checkAudioSeparatorAvailable(): Promise<string | null> {
-  if (!fs.existsSync(AUDIO_SEP_BIN)) {
+  try {
+    if (!fs.existsSync(AUDIO_SEP_BIN)) {
+      return null;
+    }
+  } catch {
     return null;
   }
 
   return new Promise((resolve) => {
-    const proc = spawn(`"${AUDIO_SEP_BIN}" --version`, [], { shell: true });
-    let output = "";
+    try {
+      const proc = spawn(`"${AUDIO_SEP_BIN}" --version`, [], { shell: true });
+      let output = "";
 
-    proc.stdout.on("data", (data: Buffer) => {
-      output += data.toString();
-    });
-    proc.stderr.on("data", (data: Buffer) => {
-      output += data.toString();
-    });
+      proc.stdout.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
+      proc.stderr.on("data", (data: Buffer) => {
+        output += data.toString();
+      });
 
-    proc.on("error", () => resolve(null));
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve(output.trim());
-      } else {
-        resolve(null);
-      }
-    });
+      proc.on("error", () => resolve(null));
+      proc.on("close", (code) => {
+        if (code === 0) {
+          resolve(output.trim());
+        } else {
+          resolve(null);
+        }
+      });
+    } catch {
+      resolve(null);
+    }
   });
 }
 
@@ -99,17 +107,25 @@ export async function checkAudioSeparatorAvailable(): Promise<string | null> {
  * Call this after confirming audio-separator is installed.
  */
 export async function logEnvironmentInfo(): Promise<string> {
-  if (!fs.existsSync(AUDIO_SEP_BIN)) return "audio-separator not installed";
+  try {
+    if (!fs.existsSync(AUDIO_SEP_BIN)) return "audio-separator not installed";
+  } catch {
+    return "Cannot check audio-separator (fs access denied)";
+  }
 
   return new Promise((resolve) => {
-    const proc = spawn(`"${AUDIO_SEP_BIN}" --env_info`, [], { shell: true });
-    let output = "";
+    try {
+      const proc = spawn(`"${AUDIO_SEP_BIN}" --env_info`, [], { shell: true });
+      let output = "";
 
-    proc.stdout.on("data", (data: Buffer) => { output += data.toString(); });
-    proc.stderr.on("data", (data: Buffer) => { output += data.toString(); });
+      proc.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+      proc.stderr.on("data", (data: Buffer) => { output += data.toString(); });
 
-    proc.on("error", () => resolve("Failed to get env info"));
-    proc.on("close", () => resolve(output.trim()));
+      proc.on("error", () => resolve("Failed to get env info"));
+      proc.on("close", () => resolve(output.trim()));
+    } catch (err) {
+      resolve(`Failed to spawn: ${err}`);
+    }
   });
 }
 
@@ -310,21 +326,20 @@ export async function separateAudio(
       }
 
       try {
-        const files = await fs.promises.readdir(outputDir);
-        const stems = new Map<string, string>();
-
-        for (const file of files) {
-          const stemName = inferStemName(file);
-          if (stemName) {
-            stems.set(stemName, path.join(outputDir, file));
-          }
-        }
+        const stems = await collectOutputStems(outputDir);
 
         if (stems.size === 0) {
-          reject(new Error("Separation completed but no output files were found."));
+          // List all files for debugging
+          const allFiles = await listAllFiles(outputDir);
+          reject(new Error(
+            `Separation completed but no output stems were detected.\n` +
+            `Output directory: ${outputDir}\n` +
+            `Files found: ${allFiles.join(", ") || "(none)"}`
+          ));
           return;
         }
 
+        console.log("[UVR] Found stems:", [...stems.entries()].map(([k, v]) => `${k}: ${path.basename(v)}`));
         onProgress("Separation complete!", 100);
         resolve({ stems });
       } catch (err) {
@@ -362,12 +377,104 @@ function parseStatusMessage(text: string): string | null {
   return null;
 }
 
-/** Infers the stem name from an output filename like "input_(Vocals)_model.wav". */
-function inferStemName(filename: string): string | null {
-  const match = filename.match(/\(([^)]+)\)/);
-  if (match) {
-    return match[1];
+/** Recursively lists all files for debugging. */
+async function listAllFiles(dir: string): Promise<string[]> {
+  const results: string[] = [];
+  try {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        const sub = await listAllFiles(fullPath);
+        results.push(...sub);
+      } else {
+        results.push(path.relative(dir, fullPath) || entry.name);
+      }
+    }
+  } catch {
+    // Permission denied or other error
   }
+  return results;
+}
+
+/** Recursively collects all audio files from the output directory and infers stem names. */
+async function collectOutputStems(outputDir: string): Promise<Map<string, string>> {
+  const stems = new Map<string, string>();
+  const audioExtensions = [".wav", ".flac", ".mp3", ".ogg"];
+
+  async function walk(dir: string) {
+    const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (audioExtensions.some(ext => entry.name.toLowerCase().endsWith(ext))) {
+        const stemName = inferStemName(entry.name);
+        // If we can't infer a stem name, use the base filename (capitalized)
+        const name = stemName ?? capitalize(path.basename(entry.name, path.extname(entry.name)));
+        stems.set(name, fullPath);
+      }
+    }
+  }
+
+  await walk(outputDir);
+  return stems;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Infers the stem name from an output filename.
+ * Handles multiple naming patterns:
+ * - MDX/Roformer: "input_(Vocals)_model.wav" → "Vocals"
+ * - HTDemucs: "(Track Name)_(Vocals)_htdemucs.wav" → "Vocals"
+ * - Bare filename: "vocals.wav" → "Vocals"
+ */
+function inferStemName(filename: string): string | null {
+  const baseName = path.basename(filename, path.extname(filename)).toLowerCase();
+
+  const KNOWN_STEMS: Record<string, string> = {
+    vocals: "Vocals",
+    voice: "Vocals",
+    drums: "Drums",
+    bass: "Bass",
+    other: "Other",
+    guitar: "Guitar",
+    piano: "Piano",
+    instrumental: "Instrumental",
+    no_vocals: "Instrumental",
+    karaoke: "Instrumental",
+  };
+
+  // Strategy 1: Find a known stem name inside parentheses
+  // Matches all (...) groups and checks if any is a known stem
+  const allParens = filename.match(/\(([^)]+)\)/g);
+  if (allParens) {
+    for (const paren of allParens) {
+      const inner = paren.slice(1, -1); // strip ( and )
+      const key = inner.toLowerCase().replace(/\s+/g, "_");
+      if (KNOWN_STEMS[key]) {
+        return KNOWN_STEMS[key];
+      }
+    }
+  }
+
+  // Strategy 2: Check if a known stem name appears anywhere separated by _ or -
+  for (const [key, label] of Object.entries(KNOWN_STEMS)) {
+    // Match as a word boundary (between underscores, hyphens, or start/end)
+    const re = new RegExp(`(?:^|[_\\-])${key}(?:$|[_\\-])`, "i");
+    if (re.test(baseName)) {
+      return label;
+    }
+  }
+
+  // Strategy 3: Bare filename is exactly a known stem
+  if (KNOWN_STEMS[baseName]) {
+    return KNOWN_STEMS[baseName];
+  }
+
   return null;
 }
 
@@ -397,7 +504,13 @@ export async function cleanupTempFiles(stems: Map<string, string>): Promise<void
 /** Helper: run a shell command and wait for completion. */
 function runCommand(command: string, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn(command, [], { shell: true });
+    let proc: ChildProcess;
+    try {
+      proc = spawn(command, [], { shell: true });
+    } catch (err) {
+      reject(new Error(`Failed to spawn command: ${err}`));
+      return;
+    }
 
     const abortHandler = () => {
       proc.kill("SIGTERM");
