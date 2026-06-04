@@ -264,12 +264,20 @@ export async function separateAudio(
       return;
     }
 
-    onProgress("Starting separation...", undefined);
-
     const fullCommand = `"${AUDIO_SEP_BIN}" ${args.join(" ")}`;
     const proc: ChildProcess = spawn(fullCommand, [], { shell: true });
 
     let stderrBuffer = "";
+
+    // Only HTDemucs FT does multiple passes (2 iterations per stem).
+    // All other models (Roformer, MDX-NET, regular HTDemucs) do a single pass.
+    const isFtModel = config.modelFilename === "htdemucs_ft.yaml";
+    let passCount = 0;
+    let totalPasses = isFtModel
+      ? (config.mode === "6-stem" ? 12 : 8)
+      : 1;
+    let lastProgress = 0;
+    let isDownloading = false;
 
     const abortHandler = () => {
       proc.kill("SIGTERM");
@@ -277,35 +285,58 @@ export async function separateAudio(
     };
     signal.addEventListener("abort", abortHandler, { once: true });
 
-    proc.stdout?.on("data", (data: Buffer) => {
-      const text = data.toString();
+    function handleProgress(text: string) {
+      // Detect model download phase.
+      if (text.includes("Downloading")) {
+        isDownloading = true;
+        const dlProgress = parseProgress(text);
+        if (dlProgress !== null) {
+          onProgress("Downloading model...", Math.round(dlProgress * 0.1)); // 0-10% for download
+        } else {
+          onProgress("Downloading model...", undefined);
+        }
+        return;
+      }
+
+      if (isDownloading && (text.includes("Loading") || text.includes("%|"))) {
+        isDownloading = false;
+      }
+
       const progress = parseProgress(text);
       if (progress !== null) {
-        onProgress("Separating stems...", progress);
+        // Detect pass reset (progress went backwards significantly).
+        if (progress < lastProgress - 20) {
+          passCount++;
+        }
+        lastProgress = progress;
+
+        // Calculate overall progress: reserve 10-95% for separation.
+        const separationRange = 85; // 10% to 95%
+        const perPassRange = separationRange / totalPasses;
+        const overallProgress = 10 + (passCount * perPassRange) + (progress / 100) * perPassRange;
+
+        const stemLabel = totalPasses > 1
+          ? `Separating stems (pass ${passCount + 1}/${totalPasses})...`
+          : "Separating stems...";
+        onProgress(stemLabel, Math.min(Math.round(overallProgress), 95));
+        return;
       }
+
+      // Extract meaningful status messages.
+      const status = parseStatusMessage(text);
+      if (status && !isDownloading) {
+        onProgress(status, undefined);
+      }
+    }
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      handleProgress(data.toString());
     });
 
     proc.stderr?.on("data", (data: Buffer) => {
       const text = data.toString();
       stderrBuffer += text;
-
-      // Parse progress percentage from tqdm output.
-      const progress = parseProgress(text);
-      if (progress !== null) {
-        onProgress("Separating stems...", progress);
-      }
-
-      // Extract meaningful status messages (stem names, phases).
-      const status = parseStatusMessage(text);
-      if (status) {
-        onProgress(status, undefined);
-      }
-
-      // Detect model download progress.
-      if (text.includes("Downloading")) {
-        const dlProgress = parseProgress(text);
-        onProgress("Downloading model...", dlProgress ?? undefined);
-      }
+      handleProgress(text);
     });
 
     proc.on("error", (err) => {

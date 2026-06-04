@@ -82,21 +82,7 @@ export function activate(activation: ActivationContext) {
           return;
         }
 
-        // Render just the audible portion of the clip (respects trim/markers).
-        let renderedPath: string;
-        await context.ui.withinProgressDialog(
-          "Rendering audio...",
-          {},
-          async (update, signal) => {
-            await update("Rendering clip audio...", undefined);
-            signal.throwIfAborted();
-            renderedPath = await context.resources.renderPreFxAudio(
-              parentTrack, startTime, endTime,
-            );
-          },
-        );
-
-        await showSettingsAndSeparate(renderedPath!, startTime, duration, trackName);
+        await showSettingsAndSeparate(parentTrack, startTime, endTime, duration, trackName);
       } catch (err) {
         console.error("[UVR] Error in separateClip:", err);
         await showErrorDialog(`Clip separation failed: ${err}`);
@@ -122,24 +108,9 @@ export function activate(activation: ActivationContext) {
         const trackHandle = selection.selected_lanes[0];
         const track = context.getObjectFromHandle(trackHandle, AudioTrack);
         const trackName = track.name ?? "Audio";
-
-        // Render the selection first, then show settings (avoid nesting dialogs).
-        let renderedPath: string;
-        await context.ui.withinProgressDialog(
-          "Rendering audio...",
-          {},
-          async (update, signal) => {
-            await update("Rendering pre-FX audio from arrangement...", undefined);
-            signal.throwIfAborted();
-
-            renderedPath = await context.resources.renderPreFxAudio(
-              track, start, end,
-            );
-          },
-        );
-
         const duration = end - start;
-        await showSettingsAndSeparate(renderedPath!, start, duration, trackName);
+
+        await showSettingsAndSeparate(track, start, end, duration, trackName);
       } catch (err) {
         console.error("[UVR] Error in separateSelection:", err);
         await showErrorDialog(`Selection separation failed: ${err}`);
@@ -178,8 +149,9 @@ export function activate(activation: ActivationContext) {
 
   // --- Core workflow: show settings dialog then run separation ---
   async function showSettingsAndSeparate(
-    inputFilePath: string,
+    sourceTrack: InstanceType<typeof AudioTrack>,
     startTimeBeats: number,
+    endTimeBeats: number,
     durationBeats: number,
     sourceTrackName: string,
   ): Promise<void> {
@@ -265,27 +237,68 @@ export function activate(activation: ActivationContext) {
     }
 
     console.log("[UVR] Starting separation with config:", JSON.stringify(config));
-    console.log("[UVR] Input file:", inputFilePath);
 
-    // Run separation with progress dialog.
+    // Run render + separation + import in a single progress dialog.
     let separationResult: SeparationResult | null = null as SeparationResult | null;
     try {
       await context.ui.withinProgressDialog(
         "Separating Stems",
         {},
         async (update, signal) => {
-          await update("Initializing...", 0);
+          // Phase 1: Render audio (0-10% is reserved for this).
+          await update("Rendering audio...", 0);
+          signal.throwIfAborted();
+
+          const inputFilePath = await context.resources.renderPreFxAudio(
+            sourceTrack, startTimeBeats, endTimeBeats,
+          );
+
+          console.log("[UVR] Rendered audio to:", inputFilePath);
+
+          // Phase 2: Separate stems (10-95%).
+          await update("Initializing separation...", 10);
 
           separationResult = await separateAudio(
             inputFilePath,
             config,
             (message, percentage) => {
+              // separator.ts already returns normalized percentages in 10-95% range
               Promise.resolve(update(message, percentage)).catch(() => {});
             },
             signal,
           );
 
-          await update("Separation complete!", 100);
+          // Phase 3: Import and create tracks (95-100%).
+          await update("Creating tracks...", 95);
+
+          if (separationResult) {
+            const finalResult: SeparationResult = separationResult;
+            const stemNames = [...finalResult.stems.keys()];
+            console.log("[UVR] Stems to import:", stemNames);
+
+            if (stemNames.length < 2 && config.mode !== "2-stem") {
+              const stemDetails = [...finalResult.stems.entries()]
+                .map(([name, p]) => `${name}: ${path.basename(p)}`)
+                .join("\n");
+              await showErrorDialog(
+                `Expected multiple stems for ${config.mode} but only found ${stemNames.length}:\n${stemDetails}\n\n` +
+                `This may be a model output naming issue. The separation files are in the temp directory.`
+              );
+              return;
+            }
+
+            // Use withinTransaction to group all track creation as a single undo step.
+            const trackPromises = context.withinTransaction(() => {
+              return importStemsAndCreateTracks(
+                context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
+                finalResult,
+                { sourceTrackName, startTimeBeats, durationBeats },
+              );
+            });
+            await trackPromises;
+          }
+
+          await update("Done!", 100);
         },
       );
     } catch (err) {
@@ -294,41 +307,13 @@ export function activate(activation: ActivationContext) {
       return;
     }
 
-    if (!separationResult) return;
-    const finalResult: SeparationResult = separationResult;
-
-    const stemNames = [...finalResult.stems.keys()];
-    console.log("[UVR] Stems to import:", stemNames);
-
-    if (stemNames.length < 2 && config.mode !== "2-stem") {
-      // Show what we found so user can report back
-      const stemDetails = [...finalResult.stems.entries()]
-        .map(([name, p]) => `${name}: ${path.basename(p)}`)
-        .join("\n");
-      await showErrorDialog(
-        `Expected multiple stems for ${config.mode} but only found ${stemNames.length}:\n${stemDetails}\n\n` +
-        `This may be a model output naming issue. The separation files are in the temp directory.`
-      );
-    }
-
-    // Import stems and create tracks OUTSIDE the progress dialog.
-    try {
-      console.log("[UVR] Importing stems:", stemNames);
-      await importStemsAndCreateTracks(
-        context as unknown as Parameters<typeof importStemsAndCreateTracks>[0],
-        finalResult,
-        { sourceTrackName, startTimeBeats, durationBeats },
-      );
-    } catch (err) {
-      console.error("[UVR] Track creation failed:", err);
-      await showErrorDialog(`Failed to create tracks: ${err}`);
-    }
-
     // Clean up temp files.
-    try {
-      await cleanupTempFiles(finalResult.stems);
-    } catch {
-      // Best-effort cleanup.
+    if (separationResult) {
+      try {
+        await cleanupTempFiles((separationResult as SeparationResult).stems);
+      } catch {
+        // Best-effort cleanup.
+      }
     }
   }
 }
