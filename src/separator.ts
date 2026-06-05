@@ -83,44 +83,68 @@ export function checkStorageVersion(): void {
 }
 
 /**
- * Locates the ffmpeg binary bundled by the imageio-ffmpeg package inside the venv.
- * Returns the directory containing ffmpeg, or undefined if not found.
+ * Ensures a `ffmpeg` (and `ffprobe`) symlink exists in the venv's bin directory,
+ * pointing to the binary bundled by imageio-ffmpeg. audio-separator calls `ffmpeg`
+ * by name via subprocess, so it must be on PATH as literally "ffmpeg".
  */
-function findFfmpegDir(): string | undefined {
-  const sitePackages = IS_WINDOWS
-    ? path.join(VENV_DIR, "Lib", "site-packages")
-    : path.join(VENV_DIR, "lib");
+function ensureFfmpegSymlinks(): void {
+  const binDir = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
+  const ffmpegLink = path.join(binDir, IS_WINDOWS ? "ffmpeg.exe" : "ffmpeg");
+  const ffprobeLink = path.join(binDir, IS_WINDOWS ? "ffprobe.exe" : "ffprobe");
 
-  const binariesDir = IS_WINDOWS
-    ? path.join(sitePackages, "imageio_ffmpeg", "binaries")
-    : null;
+  // Skip if symlinks already exist.
+  if (fs.existsSync(ffmpegLink) && fs.existsSync(ffprobeLink)) return;
 
-  // On macOS/Linux, site-packages is under lib/python3.XX/
-  // We need to find the correct python version directory.
-  let searchDir: string;
+  // Find the imageio_ffmpeg binaries directory.
+  let searchDir: string | undefined;
   if (IS_WINDOWS) {
-    searchDir = binariesDir!;
+    searchDir = path.join(VENV_DIR, "Lib", "site-packages", "imageio_ffmpeg", "binaries");
   } else {
     try {
       const libDir = path.join(VENV_DIR, "lib");
       const entries = fs.readdirSync(libDir);
       const pyDir = entries.find((e) => e.startsWith("python3"));
-      if (!pyDir) return undefined;
-      searchDir = path.join(libDir, pyDir, "site-packages", "imageio_ffmpeg", "binaries");
-    } catch {
-      return undefined;
-    }
+      if (pyDir) {
+        searchDir = path.join(libDir, pyDir, "site-packages", "imageio_ffmpeg", "binaries");
+      }
+    } catch { /* ignore */ }
+  }
+
+  if (!searchDir || !fs.existsSync(searchDir)) {
+    console.warn("[UVR] imageio_ffmpeg binaries directory not found:", searchDir);
+    return;
   }
 
   try {
-    if (!fs.existsSync(searchDir)) return undefined;
     const files = fs.readdirSync(searchDir);
-    const ffmpegFile = files.find((f) => f.startsWith("ffmpeg") && !f.includes("probe"));
-    if (ffmpegFile) return searchDir;
-  } catch {
-    // Not installed yet or not accessible.
+
+    // imageio-ffmpeg names binaries like "ffmpeg-linux-amd64-v7" or "ffmpeg-osx-arm64-v7"
+    const ffmpegBin = files.find((f) => f.startsWith("ffmpeg") && !f.includes("probe"));
+    const ffprobeBin = files.find((f) => f.startsWith("ffprobe"));
+
+    if (ffmpegBin && !fs.existsSync(ffmpegLink)) {
+      const target = path.join(searchDir, ffmpegBin);
+      try {
+        fs.symlinkSync(target, ffmpegLink);
+        console.log(`[UVR] Created ffmpeg symlink: ${ffmpegLink} -> ${target}`);
+      } catch {
+        // Symlinks may fail on Windows without admin. Copy instead.
+        fs.copyFileSync(target, ffmpegLink);
+        console.log(`[UVR] Copied ffmpeg to: ${ffmpegLink}`);
+      }
+    }
+
+    if (ffprobeBin && !fs.existsSync(ffprobeLink)) {
+      const target = path.join(searchDir, ffprobeBin);
+      try {
+        fs.symlinkSync(target, ffprobeLink);
+      } catch {
+        fs.copyFileSync(target, ffprobeLink);
+      }
+    }
+  } catch (err) {
+    console.error("[UVR] Failed to create ffmpeg symlinks:", err);
   }
-  return undefined;
 }
 
 /** Available separation modes with their corresponding model filenames. */
@@ -321,6 +345,8 @@ export async function installAudioSeparator(
           ));
           return;
         }
+        // Create ffmpeg/ffprobe symlinks in venv bin so audio-separator can find them.
+        ensureFfmpegSymlinks();
         onProgress("Installation complete!", 100);
         resolve(true);
       } else {
@@ -403,10 +429,11 @@ export async function separateAudio(
     }
 
     const fullCommand = `"${AUDIO_SEP_BIN}" ${args.join(" ")}`;
-    const ffmpegDir = findFfmpegDir();
-    const envPath = ffmpegDir
-      ? `${ffmpegDir}${path.delimiter}${process.env.PATH || ""}`
-      : process.env.PATH || "";
+    // Ensure ffmpeg symlinks exist (idempotent) and add venv bin to PATH
+    // so audio-separator's subprocess calls to "ffmpeg" resolve correctly.
+    ensureFfmpegSymlinks();
+    const venvBinDir = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
+    const envPath = `${venvBinDir}${path.delimiter}${process.env.PATH || ""}`;
     const proc: ChildProcess = spawn(fullCommand, [], {
       shell: true,
       env: { ...process.env, PYTHONUNBUFFERED: "1", PATH: envPath },
