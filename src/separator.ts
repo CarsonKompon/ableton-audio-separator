@@ -4,6 +4,10 @@ import * as fs from "node:fs";
 
 const IS_WINDOWS = process.platform === "win32";
 
+/** Current extension version — update on each release. */
+const EXTENSION_VERSION = "1.1.1";
+const VERSION_FILE = ".extension-version";
+
 // Set at runtime via `initPaths()`.
 let TEMP_DIR = "";
 let STORAGE_DIR = "";
@@ -37,6 +41,86 @@ export function initPaths(storageDir: string, tempDir: string) {
 /** Returns the resolved paths for debugging. */
 export function getPaths() {
   return { UV_BIN, VENV_DIR, AUDIO_SEP_BIN, STORAGE_DIR, TEMP_DIR };
+}
+
+/**
+ * Checks the stored version in STORAGE_DIR.
+ * If no version file exists (pre-1.1.1 install), wipes the storage folder
+ * so everything can be reinstalled cleanly. Writes the current version afterward.
+ */
+export function checkStorageVersion(): void {
+  const versionFilePath = path.join(STORAGE_DIR, VERSION_FILE);
+  let existingVersion: string | null = null;
+
+  try {
+    if (fs.existsSync(versionFilePath)) {
+      existingVersion = fs.readFileSync(versionFilePath, "utf-8").trim();
+    }
+  } catch {
+    existingVersion = null;
+  }
+
+  if (!existingVersion) {
+    // No version file — legacy install from before 1.1.1. Wipe everything.
+    console.log("[UVR] No version file found — clearing storage for clean reinstall.");
+    try {
+      fs.rmSync(STORAGE_DIR, { recursive: true, force: true });
+      fs.mkdirSync(STORAGE_DIR, { recursive: true });
+    } catch (err) {
+      console.error("[UVR] Failed to clear storage directory:", err);
+    }
+    // Re-init paths since UV_BIN may have been set from a now-deleted dir
+    initPaths(STORAGE_DIR, TEMP_DIR);
+  }
+
+  // Write current version.
+  try {
+    fs.mkdirSync(STORAGE_DIR, { recursive: true });
+    fs.writeFileSync(versionFilePath, EXTENSION_VERSION, "utf-8");
+  } catch (err) {
+    console.error("[UVR] Failed to write version file:", err);
+  }
+}
+
+/**
+ * Locates the ffmpeg binary bundled by the imageio-ffmpeg package inside the venv.
+ * Returns the directory containing ffmpeg, or undefined if not found.
+ */
+function findFfmpegDir(): string | undefined {
+  const sitePackages = IS_WINDOWS
+    ? path.join(VENV_DIR, "Lib", "site-packages")
+    : path.join(VENV_DIR, "lib");
+
+  const binariesDir = IS_WINDOWS
+    ? path.join(sitePackages, "imageio_ffmpeg", "binaries")
+    : null;
+
+  // On macOS/Linux, site-packages is under lib/python3.XX/
+  // We need to find the correct python version directory.
+  let searchDir: string;
+  if (IS_WINDOWS) {
+    searchDir = binariesDir!;
+  } else {
+    try {
+      const libDir = path.join(VENV_DIR, "lib");
+      const entries = fs.readdirSync(libDir);
+      const pyDir = entries.find((e) => e.startsWith("python3"));
+      if (!pyDir) return undefined;
+      searchDir = path.join(libDir, pyDir, "site-packages", "imageio_ffmpeg", "binaries");
+    } catch {
+      return undefined;
+    }
+  }
+
+  try {
+    if (!fs.existsSync(searchDir)) return undefined;
+    const files = fs.readdirSync(searchDir);
+    const ffmpegFile = files.find((f) => f.startsWith("ffmpeg") && !f.includes("probe"));
+    if (ffmpegFile) return searchDir;
+  } catch {
+    // Not installed yet or not accessible.
+  }
+  return undefined;
 }
 
 /** Available separation modes with their corresponding model filenames. */
@@ -161,18 +245,23 @@ export async function installAudioSeparator(
   }
 
   // Step 2: Create venv in storageDirectory if it doesn't exist.
+  // Specify --python 3.11 so uv downloads Python if none is on the system.
   if (!fs.existsSync(VENV_DIR)) {
     onProgress("Creating Python environment...", 10);
-    await runCommand(`"${UV_BIN}" venv "${VENV_DIR}"`, signal);
+    await runCommand(`"${UV_BIN}" venv "${VENV_DIR}" --python 3.11`, signal);
     signal.throwIfAborted();
   }
+
+  // All uv pip commands use VIRTUAL_ENV env var to ensure correct venv targeting.
+  const pipEnv = { ...process.env, VIRTUAL_ENV: VENV_DIR };
 
   // Step 3: Install CUDA PyTorch first if GPU mode (must come from the CUDA index).
   if (useGpu) {
     onProgress("Installing PyTorch with CUDA support...", 20);
-    await runCommand(
-      `"${UV_BIN}" pip install --python "${getVenvPython()}" torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121`,
+    await runCommandWithEnv(
+      `"${UV_BIN}" pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121`,
       signal,
+      pipEnv,
     );
     signal.throwIfAborted();
   }
@@ -187,8 +276,8 @@ export async function installAudioSeparator(
       return;
     }
 
-    const command = `"${UV_BIN}" pip install --python "${getVenvPython()}" "audio-separator[${extra}]"`;
-    const proc = spawn(command, [], { shell: true });
+    const command = `"${UV_BIN}" pip install "audio-separator[${extra}]" imageio-ffmpeg`;
+    const proc = spawn(command, [], { shell: true, env: pipEnv });
 
     const abortHandler = () => {
       proc.kill("SIGTERM");
@@ -224,6 +313,14 @@ export async function installAudioSeparator(
       if (signal.aborted) return;
 
       if (code === 0) {
+        // Verify the binary actually exists after install.
+        if (!fs.existsSync(AUDIO_SEP_BIN)) {
+          reject(new Error(
+            `Installation completed but audio-separator binary not found at expected path: ${AUDIO_SEP_BIN}\n` +
+            `Venv dir: ${VENV_DIR}\nOutput: ${output.slice(-300)}`
+          ));
+          return;
+        }
         onProgress("Installation complete!", 100);
         resolve(true);
       } else {
@@ -306,9 +403,13 @@ export async function separateAudio(
     }
 
     const fullCommand = `"${AUDIO_SEP_BIN}" ${args.join(" ")}`;
+    const ffmpegDir = findFfmpegDir();
+    const envPath = ffmpegDir
+      ? `${ffmpegDir}${path.delimiter}${process.env.PATH || ""}`
+      : process.env.PATH || "";
     const proc: ChildProcess = spawn(fullCommand, [], {
       shell: true,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: { ...process.env, PYTHONUNBUFFERED: "1", PATH: envPath },
     });
 
     let stderrBuffer = "";
@@ -578,10 +679,15 @@ export async function cleanupTempFiles(stems: Map<string, string>): Promise<void
 
 /** Helper: run a shell command and wait for completion. */
 function runCommand(command: string, signal: AbortSignal): Promise<void> {
+  return runCommandWithEnv(command, signal);
+}
+
+/** Helper: run a shell command with optional custom env and wait for completion. */
+function runCommandWithEnv(command: string, signal: AbortSignal, env?: NodeJS.ProcessEnv): Promise<void> {
   return new Promise((resolve, reject) => {
     let proc: ChildProcess;
     try {
-      proc = spawn(command, [], { shell: true });
+      proc = spawn(command, [], { shell: true, ...(env ? { env } : {}) });
     } catch (err) {
       reject(new Error(`Failed to spawn command: ${err}`));
       return;

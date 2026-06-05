@@ -15,6 +15,7 @@ import {
   logEnvironmentInfo,
   getPaths,
   initPaths,
+  checkStorageVersion,
   separateAudio,
   cleanupTempFiles,
   type SeparationConfig,
@@ -41,6 +42,7 @@ export function activate(activation: ActivationContext) {
     const tempDir = context.environment.tempDirectory;
     if (storageDir && tempDir) {
       initPaths(storageDir, tempDir);
+      checkStorageVersion();
       pathsReady = true;
       console.log("[UVR] Paths initialized:", JSON.stringify(getPaths(), null, 2));
     } else {
@@ -50,6 +52,7 @@ export function activate(activation: ActivationContext) {
       const fallbackTemp = path.join(os.tmpdir(), "ableton-uvr-temp");
       console.warn(`[UVR] SDK directories not available (storage=${storageDir}, temp=${tempDir}). Using fallback: ${fallbackStorage}`);
       initPaths(fallbackStorage, fallbackTemp);
+      checkStorageVersion();
       pathsReady = true;
     }
   } catch (err) {
