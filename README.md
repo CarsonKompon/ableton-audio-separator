@@ -1,4 +1,4 @@
-# Ableton Audio Separatttor
+# Ableton Audio Separator
 
 Stem separation inside Ableton Live — powered by [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) and the same AI models used in [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui).
 
