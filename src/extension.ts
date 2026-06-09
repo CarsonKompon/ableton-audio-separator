@@ -143,11 +143,22 @@ export function activate(activation: ActivationContext) {
   // --- Helper: show a visible error dialog to the user ---
   async function showErrorDialog(message: string): Promise<void> {
     const escaped = message.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    const html = `<html><body style="font-family:sans-serif;background:#1e1e1e;color:#e0e0e0;padding:20px;">
-      <h2 style="color:#ff4444;">Error</h2>
-      <pre style="white-space:pre-wrap;word-break:break-all;font-size:12px;background:#2a2a2a;padding:12px;border-radius:4px;max-height:200px;overflow:auto;">${escaped}</pre>
-      <div style="margin-top:16px;text-align:right;">
-        <button onclick="(function(){var m={method:'close_and_send',params:['ok']};if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.live)window.webkit.messageHandlers.live.postMessage(m);else if(window.chrome&&window.chrome.webview)window.chrome.webview.postMessage(m);})()" style="padding:8px 16px;background:#ff6b00;border:none;color:#fff;border-radius:4px;cursor:pointer;">OK</button>
+    const html = `<html><head><style>
+      *,*::before,*::after{box-sizing:border-box}*{margin:0}
+      :root{--bg:hsl(0,0%,21%);--text:hsl(0,0%,71%);--text2:hsl(0,0%,41%);--ctrl:hsl(0,0%,16%);--border:hsl(0,0%,7%);--input:hsl(0,0%,12%);--accent:hsl(31,100%,67%);--fg:hsl(0,0%,7%)}
+      html{background:var(--bg);color:var(--text);font-family:"AbletonSansSmall",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11.5px;font-weight:500;-webkit-font-smoothing:antialiased;height:100%}
+      body{padding:1.5em;height:100%;display:flex;flex-direction:column;justify-content:center}
+      h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:hsl(0,70%,55%);margin-bottom:0.75em}
+      pre{white-space:pre-wrap;word-break:break-all;font-size:11px;background:var(--input);color:var(--text);padding:0.75em;border:1px solid var(--border);max-height:140px;overflow:auto;margin-bottom:1em;font-family:monospace}
+      .actions{display:flex;justify-content:flex-end}
+      .btn{font-size:1rem;line-height:1;background:var(--ctrl);color:var(--text);border:1px solid var(--border);height:22px;padding:0 1.25em;border-radius:1em;cursor:pointer;user-select:none}
+      .btn:hover{background:hsl(0,0%,14%)}
+      .btn:active{color:var(--fg);background:var(--accent)}
+    </style></head><body>
+      <h2>Error</h2>
+      <pre>${escaped}</pre>
+      <div class="actions">
+        <button class="btn" onclick="(function(){var m={method:'close_and_send',params:['ok']};if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.live)window.webkit.messageHandlers.live.postMessage(m);else if(window.chrome&&window.chrome.webview)window.chrome.webview.postMessage(m);})()">OK</button>
       </div></body></html>`;
     try {
       await context.ui.showModalDialog(`data:text/html,${encodeURIComponent(html)}`, 460, 260);
@@ -174,14 +185,28 @@ export function activate(activation: ActivationContext) {
     if (!version) {
       // Offer to install audio-separator for the user.
       const installHtml = `
-        <html><body style="font-family:sans-serif;background:#1e1e1e;color:#e0e0e0;padding:20px;">
-        <h2 style="color:#ff6b00;">audio-separator not found</h2>
-        <p style="margin:12px 0;">This extension requires <strong>audio-separator</strong> to separate stems. It will be installed automatically via <strong>uv</strong> (Python package manager).</p>
-        <p style="margin:8px 0;color:#999;">Would you like to install it now?</p>
-        <div style="margin-top:20px;display:flex;gap:10px;justify-content:flex-end;">
-          <button onclick="send('cancel')" style="padding:8px 16px;background:#2a2a2a;border:1px solid #3a3a3a;color:#e0e0e0;border-radius:4px;cursor:pointer;">Cancel</button>
-          <button onclick="send('install-cpu')" style="padding:8px 16px;background:#333;border:1px solid #3a3a3a;color:#e0e0e0;border-radius:4px;cursor:pointer;">Install (CPU only)</button>
-          <button onclick="send('install-gpu')" style="padding:8px 16px;background:#ff6b00;border:none;color:#fff;border-radius:4px;cursor:pointer;">Install (GPU)</button>
+        <html><head><style>
+          *,*::before,*::after{box-sizing:border-box}*{margin:0}
+          :root{--bg:hsl(0,0%,21%);--text:hsl(0,0%,71%);--text2:hsl(0,0%,41%);--ctrl:hsl(0,0%,16%);--border:hsl(0,0%,7%);--input:hsl(0,0%,12%);--accent:hsl(31,100%,67%);--fg:hsl(0,0%,7%)}
+          html{background:var(--bg);color:var(--text);font-family:"AbletonSansSmall",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:11.5px;font-weight:500;-webkit-font-smoothing:antialiased;height:100%}
+          body{padding:1.5em;height:100%;display:flex;flex-direction:column;justify-content:center}
+          h2{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--accent);margin-bottom:0.75em}
+          p{line-height:1.6;margin-bottom:0.5em}
+          .muted{color:var(--text2)}
+          .actions{display:flex;gap:0.5em;margin-top:1.25em;justify-content:flex-end}
+          .btn{font-size:1rem;line-height:1;background:var(--ctrl);color:var(--text);border:1px solid var(--border);height:22px;padding:0 1.25em;border-radius:1em;cursor:pointer;user-select:none;white-space:nowrap}
+          .btn:hover{background:hsl(0,0%,14%)}
+          .btn:active{color:var(--fg);background:var(--accent)}
+          .btn--primary{background:var(--accent);color:var(--fg);border-color:var(--accent)}
+          .btn--primary:hover{background:hsl(31,100%,60%)}
+        </style></head><body>
+        <h2>audio-separator not found</h2>
+        <p>This extension requires <strong>audio-separator</strong> to separate stems. It will be installed automatically via <strong>uv</strong> (Python package manager).</p>
+        <p class="muted">Would you like to install it now?</p>
+        <div class="actions">
+          <button class="btn" onclick="send('cancel')">Cancel</button>
+          <button class="btn" onclick="send('install-cpu')">Install (CPU only)</button>
+          <button class="btn btn--primary" onclick="send('install-gpu')">Install (GPU)</button>
         </div>
         <script>function send(v){const m={method:"close_and_send",params:[v]};if(window.webkit?.messageHandlers?.live)window.webkit.messageHandlers.live.postMessage(m);else if(window.chrome?.webview)window.chrome.webview.postMessage(m);}</script>
         </body></html>`;
