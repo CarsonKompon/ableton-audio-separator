@@ -14,6 +14,7 @@ let STORAGE_DIR = "";
 let UV_BIN = "";
 let VENV_DIR = "";
 let AUDIO_SEP_BIN = "";
+let MODELS_DIR = "";
 
 /**
  * Must be called once at activation with the SDK-provided directories.
@@ -22,6 +23,7 @@ export function initPaths(storageDir: string, tempDir: string) {
   STORAGE_DIR = storageDir;
   TEMP_DIR = tempDir;
   VENV_DIR = path.join(storageDir, ".venv");
+  MODELS_DIR = path.join(storageDir, "models");
   const scriptsDir = path.join(VENV_DIR, IS_WINDOWS ? "Scripts" : "bin");
   AUDIO_SEP_BIN = path.join(scriptsDir, IS_WINDOWS ? "audio-separator.exe" : "audio-separator");
 
@@ -416,6 +418,7 @@ export async function separateAudio(
     "--model_filename", `"${config.modelFilename}"`,
     "--output_dir", `"${outputDir}"`,
     "--output_format", config.outputFormat,
+    "--model_file_dir", `"${MODELS_DIR}"`,
   ];
 
   if (config.useGpu) {

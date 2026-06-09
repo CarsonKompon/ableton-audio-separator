@@ -43,22 +43,47 @@
     }
 
     body {
-      padding: 1.5em;
+      padding: 0;
       height: 100%;
+      display: flex;
+      flex-direction: column;
     }
 
-    h1 {
-      font-size: 13px;
-      font-weight: 700;
-      margin-bottom: 1.25em;
-      color: var(--c-text-primary);
+    /* Tab bar */
+    .tab-bar {
+      display: flex;
+      border-bottom: 1px solid var(--c-control-border);
+      flex-shrink: 0;
+    }
+    .tab-bar button {
+      flex: 1;
+      padding: 0.75em 1em;
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      color: var(--c-text-secondary);
+      cursor: pointer;
+      font-size: 1rem;
+      font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
-
-    .field {
-      margin-bottom: 1em;
+    .tab-bar button:hover { color: var(--c-text-primary); }
+    .tab-bar button.active {
+      color: var(--c-text-primary);
+      border-bottom-color: var(--c-highlight--primary);
     }
+
+    /* Tab panels */
+    .tab-panel {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25em 1.5em;
+    }
+    .tab-panel.active { display: flex; flex-direction: column; }
+
+    .field { margin-bottom: 1em; }
 
     label {
       display: block;
@@ -68,7 +93,7 @@
       cursor: pointer;
     }
 
-    select {
+    select, input[type="text"] {
       width: 100%;
       font-size: 1rem;
       line-height: 1.5;
@@ -78,6 +103,8 @@
       height: 22px;
       padding: 0 0.5em;
       outline-offset: 0;
+    }
+    select {
       -webkit-appearance: none;
       appearance: none;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%23999'/%3E%3C/svg%3E");
@@ -85,11 +112,11 @@
       background-position: right 6px center;
       padding-right: 20px;
     }
-
-    select:focus {
+    select:focus, input[type="text"]:focus {
       border-color: var(--c-control-border);
       outline: 2px solid var(--c-control-outline);
     }
+    input[type="text"]::placeholder { color: var(--c-text-secondary); }
 
     .checkbox-field {
       display: flex;
@@ -97,14 +124,12 @@
       gap: 0.5em;
       margin-bottom: 1em;
     }
-
     .checkbox-field input[type="checkbox"] {
       width: 14px;
       height: 14px;
       accent-color: var(--c-highlight--primary);
       cursor: pointer;
     }
-
     .checkbox-field label {
       margin-bottom: 0;
       color: var(--c-text-primary);
@@ -120,14 +145,15 @@
     .actions {
       display: flex;
       gap: 0.5em;
-      margin-top: 1.5em;
+      margin-top: auto;
+      padding-top: 1em;
       justify-content: flex-end;
     }
 
     .separator {
       border: none;
       border-top: 1px solid var(--c-control-border);
-      margin: 1.25em 0;
+      margin: 1em 0;
     }
 
     .alx-button {
@@ -149,7 +175,6 @@
       background-color: var(--c-highlight--primary);
     }
     .alx-button:focus { outline: 2px solid var(--c-control-outline); }
-
     .alx-button--primary {
       background-color: var(--c-highlight--primary);
       color: var(--c-control-on-foreground);
@@ -161,49 +186,153 @@
     .alx-button--primary:active {
       background-color: oklch(from var(--p-live-accent-primary) calc(l * 0.8) c h);
     }
+    .alx-button--small {
+      height: 18px;
+      padding: 0 0.75em;
+      font-size: 10px;
+    }
+    .alx-button--danger:active {
+      background-color: hsl(0, 60%, 50%);
+    }
+
+    /* Model list styles */
+    .model-list {
+      overflow-y: auto;
+      border: 1px solid var(--c-control-border);
+      background: var(--c-input-bg-500);
+      max-height: 140px;
+      margin-top: 0.5em;
+    }
+    .model-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.4em 0.6em;
+      border-bottom: 1px solid var(--c-control-border);
+      gap: 0.5em;
+    }
+    .model-item:last-child { border-bottom: none; }
+    .model-item-name {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .model-item-badge {
+      font-size: 9px;
+      padding: 0.1em 0.4em;
+      border-radius: 3px;
+      background: var(--c-control-bg--500);
+      color: var(--c-text-secondary);
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .model-item-badge--installed {
+      background: oklch(from var(--p-live-accent-primary) l c h / 0.2);
+      color: var(--c-highlight--primary);
+    }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--c-text-secondary);
+      margin-bottom: 0.5em;
+      margin-top: 1em;
+    }
+    .section-title:first-child { margin-top: 0; }
+
+    .empty-msg {
+      padding: 0.75em;
+      text-align: center;
+      color: var(--c-text-secondary);
+    }
   </style>
 </head>
 <body>
-  <h1>Separate Stems</h1>
-
-  <div class="field">
-    <label for="mode">Separation Mode</label>
-    <select id="mode">
-      <option value="2-stem">2-Stem (Vocals + Instrumental)</option>
-      <option value="4-stem">4-Stem (Vocals, Drums, Bass, Other)</option>
-      <option value="6-stem">6-Stem (Vocals, Drums, Bass, Guitar, Piano, Other)</option>
-    </select>
+  <div class="tab-bar">
+    <button class="active" data-tab="separate">Separate</button>
+    <button data-tab="models">Models</button>
   </div>
 
-  <div class="field">
-    <label for="model">Model</label>
-    <select id="model"></select>
-    <div class="model-info" id="modelInfo">Best quality vocal/instrumental separation</div>
+  <!-- ===== SEPARATE TAB ===== -->
+  <div class="tab-panel active" id="tab-separate">
+    <div class="field">
+      <label for="mode">Separation Mode</label>
+      <select id="mode">
+        <option value="2-stem">2-Stem (Vocals + Instrumental)</option>
+        <option value="4-stem">4-Stem (Vocals, Drums, Bass, Other)</option>
+        <option value="6-stem">6-Stem (Vocals, Drums, Bass, Guitar, Piano, Other)</option>
+      </select>
+    </div>
+
+    <div class="field">
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <div class="model-info" id="modelInfo"></div>
+    </div>
+
+    <div class="separator"></div>
+
+    <div class="field">
+      <label for="outputFormat">Output Format</label>
+      <select id="outputFormat">
+        <option value="WAV">WAV (Lossless)</option>
+        <option value="FLAC">FLAC (Lossless, compressed)</option>
+      </select>
+    </div>
+
+    <div class="checkbox-field">
+      <input type="checkbox" id="useGpu" checked />
+      <label for="useGpu">Use GPU acceleration (CUDA)</label>
+    </div>
+
+    <div class="actions">
+      <button class="alx-button" onclick="cancel()">Cancel</button>
+      <button class="alx-button alx-button--primary" onclick="separate()">Separate</button>
+    </div>
   </div>
 
-  <div class="separator"></div>
+  <!-- ===== MODELS TAB ===== -->
+  <div class="tab-panel" id="tab-models">
+    <!-- Installed Models -->
+    <div class="section-title">Installed Models</div>
+    <div class="model-list" id="installedList">
+      <div class="empty-msg">No custom models installed</div>
+    </div>
 
-  <div class="field">
-    <label for="outputFormat">Output Format</label>
-    <select id="outputFormat">
-      <option value="WAV">WAV (Lossless)</option>
-      <option value="FLAC">FLAC (Lossless, compressed)</option>
-    </select>
-  </div>
+    <!-- Browse UVR Models -->
+    <div class="section-title">Browse Models</div>
+    <div class="field">
+      <select id="browseCategory">
+        <option value="all">All Categories</option>
+        <option value="Roformer">Roformer</option>
+        <option value="MDX-Net">MDX-Net</option>
+        <option value="VR">VR Architecture</option>
+        <option value="Demucs">Demucs</option>
+        <option value="MDX23C">MDX23C</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="model-list" id="browseList">
+      <div class="empty-msg">Loading...</div>
+    </div>
 
-  <div class="checkbox-field">
-    <input type="checkbox" id="useGpu" checked />
-    <label for="useGpu">Use GPU acceleration (CUDA)</label>
-  </div>
-
-  <div class="actions">
-    <button class="alx-button" onclick="cancel()">Cancel</button>
-    <button class="alx-button alx-button--primary" onclick="separate()">Separate</button>
+    <!-- Import local -->
+    <div style="margin-top:1em;">
+      <button class="alx-button" onclick="importLocal()">Import Local Model File...</button>
+    </div>
   </div>
 
   <script>
-    // Model definitions matching src/separator.ts
-    const MODELS = {
+    /*__INJECTED_DATA__*/
+
+    // Injected data from extension host (or fallback defaults).
+    const DATA = window.__INJECTED_DATA__ || { installedModels: [], uvrModels: [] };
+
+    // Built-in models.
+    const BUILTIN_MODELS = {
       "2-stem": [
         { name: "BS-Roformer (Best Quality)", filename: "model_bs_roformer_ep_317_sdr_12.9755.ckpt" },
         { name: "MelBand Roformer (Vocals)", filename: "vocals_mel_band_roformer.ckpt" },
@@ -229,20 +358,54 @@
       "htdemucs_6s.yaml": "6-stem: vocals, drums, bass, guitar, piano, other",
     };
 
+    // --- Tab switching ---
+    document.querySelectorAll(".tab-bar button").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab-bar button").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      });
+    });
+
+    // --- Separate tab ---
     const modeSelect = document.getElementById("mode");
     const modelSelect = document.getElementById("model");
     const modelInfo = document.getElementById("modelInfo");
 
     function populateModels() {
       const mode = modeSelect.value;
-      const models = MODELS[mode];
+      const builtins = BUILTIN_MODELS[mode] || [];
+      const custom = DATA.installedModels.filter((m) => m.stemMode === mode);
+
       modelSelect.innerHTML = "";
-      models.forEach((m) => {
-        const opt = document.createElement("option");
-        opt.value = m.filename;
-        opt.textContent = m.name;
-        modelSelect.appendChild(opt);
-      });
+
+      // Built-in group
+      if (builtins.length) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Built-in";
+        builtins.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.filename;
+          opt.textContent = m.name;
+          grp.appendChild(opt);
+        });
+        modelSelect.appendChild(grp);
+      }
+
+      // Custom group
+      if (custom.length) {
+        const grp = document.createElement("optgroup");
+        grp.label = "Custom";
+        custom.forEach((m) => {
+          const opt = document.createElement("option");
+          opt.value = m.filename;
+          opt.textContent = m.name;
+          grp.appendChild(opt);
+        });
+        modelSelect.appendChild(grp);
+      }
+
       updateModelInfo();
     }
 
@@ -253,11 +416,63 @@
 
     modeSelect.addEventListener("change", populateModels);
     modelSelect.addEventListener("change", updateModelInfo);
-
-    // Initialize
     populateModels();
 
-    // Communication with extension host
+    // --- Models tab: Installed ---
+    function renderInstalledList() {
+      const list = document.getElementById("installedList");
+      const models = DATA.installedModels;
+      if (!models.length) {
+        list.innerHTML = '<div class="empty-msg">No custom models installed</div>';
+        return;
+      }
+      list.innerHTML = models.map((m) => `
+        <div class="model-item">
+          <span class="model-item-name" title="${esc(m.filename)}">${esc(m.name)}</span>
+          <span class="model-item-badge">${esc(m.source)}</span>
+          <button class="alx-button alx-button--small alx-button--danger" onclick="deleteModel('${esc(m.filename)}')">Delete</button>
+        </div>
+      `).join("");
+    }
+    renderInstalledList();
+
+    // --- Models tab: Browse ---
+    const browseCat = document.getElementById("browseCategory");
+    const browseList = document.getElementById("browseList");
+
+    function renderBrowseList() {
+      const cat = browseCat.value;
+      let models = DATA.uvrModels || [];
+      if (cat !== "all") {
+        models = models.filter((m) => m.category === cat);
+      }
+      const display = models.slice(0, 50);
+      if (!display.length) {
+        browseList.innerHTML = '<div class="empty-msg">No models found</div>';
+        return;
+      }
+      const installedFilenames = new Set(DATA.installedModels.map((m) => m.filename));
+      // Also mark built-in models as installed
+      const builtinFilenames = new Set();
+      for (const group of Object.values(BUILTIN_MODELS)) {
+        for (const m of group) builtinFilenames.add(m.filename);
+      }
+      browseList.innerHTML = display.map((m) => {
+        const installed = installedFilenames.has(m.filename) || builtinFilenames.has(m.filename);
+        return `<div class="model-item">
+          <span class="model-item-name" title="${esc(m.filename)}">${esc(m.name)}</span>
+          <span class="model-item-badge">${esc(m.category)}</span>
+          ${installed
+            ? '<span class="model-item-badge model-item-badge--installed">Installed</span>'
+            : `<button class="alx-button alx-button--small" onclick="downloadUvr('${esc(m.filename)}')">Download</button>`
+          }
+        </div>`;
+      }).join("");
+    }
+    browseCat.addEventListener("change", renderBrowseList);
+    renderBrowseList();
+
+    // --- Communication ---
     function postMessage(msg) {
       const message = { method: "close_and_send", params: [JSON.stringify(msg)] };
       if (window.webkit?.messageHandlers?.live) {
@@ -279,6 +494,22 @@
 
     function cancel() {
       postMessage({ action: "cancel" });
+    }
+
+    function downloadUvr(filename) {
+      postMessage({ action: "download_model", filename });
+    }
+
+    function deleteModel(filename) {
+      postMessage({ action: "delete_model", filename });
+    }
+
+    function importLocal() {
+      postMessage({ action: "import_model" });
+    }
+
+    function esc(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
     }
   </script>
 </body>

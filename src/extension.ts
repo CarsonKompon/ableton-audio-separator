@@ -22,6 +22,14 @@ import {
   type SeparationResult,
 } from "./separator.js";
 import { importStemsAndCreateTracks } from "./tracks.js";
+import {
+  initModelsDir,
+  getInstalledModels,
+  fetchUvrModelList,
+  downloadModel,
+  deleteModel,
+  type RemoteModel,
+} from "./models.js";
 
 // esbuild inlines this HTML file as a string.
 import settingsHtml from "../ui/settings.html";
@@ -43,6 +51,7 @@ export function activate(activation: ActivationContext) {
     if (storageDir && tempDir) {
       initPaths(storageDir, tempDir);
       checkStorageVersion();
+      initModelsDir(storageDir);
       pathsReady = true;
       console.log("[UVR] Paths initialized:", JSON.stringify(getPaths(), null, 2));
     } else {
@@ -53,6 +62,7 @@ export function activate(activation: ActivationContext) {
       console.warn(`[UVR] SDK directories not available (storage=${storageDir}, temp=${tempDir}). Using fallback: ${fallbackStorage}`);
       initPaths(fallbackStorage, fallbackTemp);
       checkStorageVersion();
+      initModelsDir(fallbackStorage);
       pathsReady = true;
     }
   } catch (err) {
@@ -243,32 +253,93 @@ export function activate(activation: ActivationContext) {
       }
     }
 
-    // Show the settings modal dialog.
-    const settingsUrl = `data:text/html,${encodeURIComponent(settingsHtml)}`;
-    const result = await context.ui.showModalDialog(settingsUrl, 440, 480);
+    // Show the settings modal dialog in a loop (handles model actions).
+    let config: SeparationConfig | null = null;
 
-    console.log("[UVR] Dialog result:", JSON.stringify(result));
-
-    if (!result) {
-      console.log("[UVR] Dialog returned empty result (cancelled or closed).");
-      return;
-    }
-
-    let config: SeparationConfig;
+    // Fetch model data for injection into the dialog.
+    let uvrModels: RemoteModel[] = [];
     try {
-      const parsed = JSON.parse(result);
+      uvrModels = await fetchUvrModelList();
+    } catch (err) {
+      console.warn("[UVR] Failed to fetch UVR model list:", err);
+    }
+
+    while (true) {
+      const installedModels = getInstalledModels();
+      const injectedData = JSON.stringify({ installedModels, uvrModels });
+      const injectedHtml = settingsHtml.replace(
+        "/*__INJECTED_DATA__*/",
+        `window.__INJECTED_DATA__ = ${injectedData};`,
+      );
+      const settingsUrl = `data:text/html,${encodeURIComponent(injectedHtml)}`;
+      const result = await context.ui.showModalDialog(settingsUrl, 560, 520);
+
+      console.log("[UVR] Dialog result:", JSON.stringify(result));
+
+      if (!result) {
+        console.log("[UVR] Dialog returned empty result (cancelled or closed).");
+        return;
+      }
+
+      let parsed: any;
+      try {
+        parsed = JSON.parse(result);
+      } catch {
+        console.error("[UVR] Failed to parse dialog result:", result);
+        await showErrorDialog(`Failed to parse settings: ${result}`);
+        return;
+      }
+
       if (parsed.action === "cancel" || !parsed.action) return;
-      config = {
-        mode: parsed.mode,
-        modelFilename: parsed.modelFilename,
-        outputFormat: parsed.outputFormat,
-        useGpu: parsed.useGpu,
-      };
-    } catch {
-      console.error("[UVR] Failed to parse dialog result:", result);
-      await showErrorDialog(`Failed to parse settings: ${result}`);
+
+      if (parsed.action === "download_model") {
+        // Download a model from the UVR list.
+        const model = uvrModels.find((m) => m.filename === parsed.filename);
+        if (model) {
+          try {
+            await context.ui.withinProgressDialog(
+              `Downloading ${model.name}`,
+              {},
+              async (update, signal) => {
+                await downloadModel(model, update, signal);
+              },
+            );
+          } catch (err) {
+            console.error("[UVR] Model download failed:", err);
+            await showErrorDialog(`Model download failed: ${err}`);
+          }
+        }
+        continue; // Reopen dialog
+      }
+
+      if (parsed.action === "delete_model") {
+        deleteModel(parsed.filename);
+        continue; // Reopen dialog
+      }
+
+      if (parsed.action === "import_model") {
+        // Import local model — user sends this action, we note it and reopen.
+        // In the Ableton SDK there's no file picker, so for now this is a placeholder.
+        // Users can manually place model files in the models directory.
+        console.log("[UVR] Import local model requested (manual placement in models dir).");
+        continue; // Reopen dialog
+      }
+
+      if (parsed.action === "separate") {
+        config = {
+          mode: parsed.mode,
+          modelFilename: parsed.modelFilename,
+          outputFormat: parsed.outputFormat,
+          useGpu: parsed.useGpu,
+        };
+        break; // Proceed to separation
+      }
+
+      // Unknown action — exit.
       return;
     }
+
+    if (!config) return;
 
     console.log("[UVR] Starting separation with config:", JSON.stringify(config));
 

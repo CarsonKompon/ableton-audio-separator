@@ -87,4 +87,13 @@ ui/
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+## Acknowledgments
+
+This extension uses AI models from the [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui) project (MIT-licensed). Credit to the UVR core developers:
+
+- [Anjok07](https://github.com/anjok07)
+- [aufr33](https://github.com/aufr33)
+
+Audio separation is performed via [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator) by [nomadkaraoke](https://github.com/nomadkaraoke).
